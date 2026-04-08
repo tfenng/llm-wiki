@@ -1,18 +1,20 @@
 # llmwiki
 
-> **LLM-powered knowledge base from your Claude Code and Codex CLI sessions.**
+> **LLM-powered knowledge base from your Claude Code, Codex CLI, Cursor, Gemini CLI, and Obsidian sessions.**
 > Built on [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-v0.4.0-7C3AED.svg)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-71%20passing-10B981.svg)](tests/)
 [![Works with Claude Code](https://img.shields.io/badge/Claude%20Code-✓-7C3AED.svg)](https://claude.com/claude-code)
 [![Works with Codex CLI](https://img.shields.io/badge/Codex%20CLI-✓-7C3AED.svg)](https://github.com/openai/codex)
 
 ---
 
-Every Claude Code and Codex CLI session writes a full transcript to disk. You already have hundreds of them and never look at them again.
+Every Claude Code, Codex CLI, and Cursor session writes a full transcript to disk. You already have hundreds of them and never look at them again.
 
-**llmwiki** turns that dormant history into a beautiful, searchable, interlinked knowledge base — locally, in two commands.
+**llmwiki** turns that dormant history into a beautiful, searchable, interlinked knowledge base — locally, in two commands. Plus, it produces AI-consumable exports (`llms.txt`, `llms-full.txt`, JSON-LD graph, per-page `.txt` + `.json` siblings) so other AI agents can query your wiki directly.
 
 ```bash
 ./setup.sh                         # one-time install
@@ -21,18 +23,52 @@ Every Claude Code and Codex CLI session writes a full transcript to disk. You al
 
 ## What you get
 
+### Human-readable
 - **All your sessions**, converted from `.jsonl` to clean, redacted markdown
-- **A Karpathy-style wiki** — `sources/`, `entities/`, `concepts/`, linked with `[[wikilinks]]`
+- **A Karpathy-style wiki** — `sources/`, `entities/`, `concepts/`, `syntheses/`, `comparisons/`, `questions/` linked with `[[wikilinks]]`
 - **A beautiful static site** you can browse locally or deploy to GitHub Pages
-  - Global search (Cmd+K command palette)
-  - Syntax highlighting (Pygments)
-  - Dark mode (system-aware + manual toggle)
-  - Keyboard shortcuts (`/` search, `g h` home, `j/k` next/prev)
-  - Collapsible tool-result sections
+  - Global search (Cmd+K command palette with fuzzy match over pre-built index)
+  - Pygments syntax highlighting
+  - Dark mode (system-aware + manual toggle with `data-theme`)
+  - Keyboard shortcuts: `/` search · `g h/p/s` nav · `j/k` rows · `?` help
+  - Collapsible tool-result sections (auto-expand > 500 chars)
   - Copy-as-markdown + copy-code buttons
-  - Mobile-responsive
+  - Breadcrumbs + reading progress bar
+  - Filter bar on sessions table (project/model/date/text)
+  - Reading time estimates (`X min read`)
+  - Related pages panel at the bottom of every session
+  - Activity heatmap on the home page
+  - Hover-to-preview wikilinks
+  - Deep-link icons next to every heading
+  - Mobile-responsive + print-friendly
+
+### AI-consumable (v0.4)
+Every HTML page has sibling machine-readable files at the same URL:
+
+- `<page>.html` — human HTML with schema.org microdata
+- `<page>.txt` — plain text version (no HTML tags)
+- `<page>.json` — structured metadata + body
+
+Site-level AI-agent entry points:
+
+| File | What |
+|---|---|
+| [`/llms.txt`](docs/v0.4-roadmap.md) | Short index per [llmstxt.org spec](https://llmstxt.org) |
+| `/llms-full.txt` | Flattened plain-text dump (~5 MB cap) — paste into any LLM's context |
+| `/graph.jsonld` | Schema.org JSON-LD entity/concept/source graph |
+| `/sitemap.xml` | Standard sitemap with `lastmod` |
+| `/rss.xml` | RSS 2.0 feed of newest sessions |
+| `/robots.txt` | AI-friendly robots with llms.txt reference |
+| `/ai-readme.md` | AI-specific navigation instructions |
+| `/manifest.json` | Build manifest with SHA-256 hashes + perf budget |
+
+Every page also includes an `<!-- llmwiki:metadata -->` HTML comment that AI agents can parse without fetching the separate `.json` sibling.
+
+### Automation
 - **SessionStart hook** — auto-syncs new sessions in the background on every Claude Code launch
-- **No servers, no database, no npm** — Python stdlib + `markdown`
+- **File watcher** — `llmwiki watch` polls agent stores with debounce and runs sync on change
+- **MCP server** — 7 production tools (`wiki_query`, `wiki_search`, `wiki_list_sources`, `wiki_read_page`, `wiki_lint`, `wiki_sync`, `wiki_export`) queryable from any MCP client (Claude Desktop, Cline, Cursor, ChatGPT desktop)
+- **No servers, no database, no npm** — Python stdlib + `markdown` (Pygments optional)
 
 ## How it works
 
@@ -40,6 +76,9 @@ Every Claude Code and Codex CLI session writes a full transcript to disk. You al
 ┌─────────────────────────────────────┐
 │  ~/.claude/projects/*/*.jsonl       │  ← Claude Code sessions
 │  ~/.codex/sessions/**/*.jsonl       │  ← Codex CLI sessions
+│  ~/Library/.../Cursor/workspaceS…   │  ← Cursor
+│  ~/Documents/Obsidian Vault/        │  ← Obsidian
+│  ~/.gemini/                         │  ← Gemini CLI
 └──────────────┬──────────────────────┘
                │
                ▼   python3 -m llmwiki sync
@@ -53,69 +92,133 @@ Every Claude Code and Codex CLI session writes a full transcript to disk. You al
 │  wiki/sources/<slug>.md             │  ← LLM-generated wiki (Karpathy layer 2)
 │  wiki/entities/<Name>.md            │
 │  wiki/concepts/<Name>.md            │
+│  wiki/syntheses/<Name>.md           │
+│  wiki/comparisons/<Name>.md         │
+│  wiki/questions/<Name>.md           │
 │  wiki/index.md, overview.md, log.md │
 └──────────────┬──────────────────────┘
                │
                ▼   python3 -m llmwiki build
 ┌─────────────────────────────────────┐
-│  site/                              │  ← static HTML site
-│     index.html, style.css, ...      │
+│  site/                              │  ← static HTML + AI exports
+│  ├── index.html, style.css, ...     │
+│  ├── sessions/<project>/<slug>.html │
+│  ├── sessions/<project>/<slug>.txt  │  (AI sibling)
+│  ├── sessions/<project>/<slug>.json │  (AI sibling)
+│  ├── llms.txt, llms-full.txt        │
+│  ├── graph.jsonld                   │
+│  ├── sitemap.xml, rss.xml           │
+│  ├── robots.txt, ai-readme.md       │
+│  ├── manifest.json                  │
+│  └── search-index.json              │
 └─────────────────────────────────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for the full Karpathy three-layer breakdown.
+See [docs/architecture.md](docs/architecture.md) for the full 3-layer Karpathy + 8-layer build breakdown.
 
 ## Install
 
 ### macOS / Linux
 
 ```bash
-git clone https://github.com/Pratiyush/llmwiki.git
-cd llmwiki
+git clone https://github.com/Pratiyush/llm-wiki.git
+cd llm-wiki
 ./setup.sh
 ```
 
 ### Windows
 
 ```cmd
-git clone https://github.com/Pratiyush/llmwiki.git
-cd llmwiki
+git clone https://github.com/Pratiyush/llm-wiki.git
+cd llm-wiki
 setup.bat
+```
+
+### With pip (v0.3+)
+
+```bash
+pip install -e .                # basic
+pip install -e '.[highlight]'   # + Pygments syntax highlighting
+pip install -e '.[pdf]'         # + PDF ingestion
+pip install -e '.[dev]'         # + pytest + ruff
+pip install -e '.[all]'         # all of the above
 ```
 
 ### What setup does
 
 1. Creates `raw/`, `wiki/`, `site/` data directories
-2. Installs the `llmwiki` Python package in-place (no `pip install` needed — just stdlib)
-3. Detects Claude Code and/or Codex CLI and enables the matching adapter
+2. Installs the `llmwiki` Python package in-place
+3. Detects your coding agents and enables matching adapters
 4. Optionally offers to install the `SessionStart` hook into `~/.claude/settings.json` for auto-sync
 5. Runs a first sync so you see output immediately
 
-## Commands
+## CLI reference
 
-All commands are one-click shell scripts. Under the hood they call `python3 -m llmwiki <subcommand>`.
+```bash
+llmwiki init                    # scaffold raw/ wiki/ site/
+llmwiki sync                    # convert .jsonl → markdown
+llmwiki build                   # compile static HTML + AI exports
+llmwiki serve                   # local HTTP server on 127.0.0.1:8765
+llmwiki adapters                # list available adapters
+llmwiki graph                   # build knowledge graph (v0.2)
+llmwiki watch                   # file watcher with debounce (v0.2)
+llmwiki export-obsidian         # write wiki to Obsidian vault (v0.2)
+llmwiki eval                    # 7-check structural quality score /100 (v0.3)
+llmwiki check-links             # verify internal links in site/ (v0.4)
+llmwiki export <format>         # AI-consumable exports (v0.4)
+llmwiki manifest                # build site manifest + perf budget (v0.4)
+llmwiki version
+```
 
-| Command | What it does | Shell | Windows |
-|---|---|---|---|
-| Install | Bootstrap + first sync | `./setup.sh` | `setup.bat` |
-| Sync | Convert new `.jsonl` → markdown | `./sync.sh` | `sync.bat` |
-| Build | Compile wiki + HTML | `./build.sh` | `build.bat` |
-| Serve | Start local HTTP server | `./serve.sh` | `serve.bat` |
-| Query (agent) | Ask your wiki | `/wiki-query ...` | `/wiki-query ...` |
-| Lint | Check orphans / stale pages | `/wiki-lint` | `/wiki-lint` |
-
-See [docs/getting-started.md](docs/getting-started.md) for full usage.
+Each subcommand has its own `--help`. All commands are also wrapped in one-click shell/batch scripts: `sync.sh`/`.bat`, `build.sh`/`.bat`, `serve.sh`/`.bat`, `upgrade.sh`/`.bat`.
 
 ## Works with
 
-| Agent | Adapter | Status |
-|---|---|---|
-| [Claude Code](https://claude.com/claude-code) | `llmwiki.adapters.claude_code` | ✅ Production |
-| [Codex CLI](https://github.com/openai/codex) | `llmwiki.adapters.codex_cli` | 🚧 Stub (v0.2) |
-| Gemini CLI | `llmwiki.adapters.gemini_cli` | ⏳ Planned |
-| OpenCode | `llmwiki.adapters.opencode` | ⏳ Planned |
+| Agent | Adapter | Status | Added in |
+|---|---|---|---|
+| [Claude Code](https://claude.com/claude-code) | `llmwiki.adapters.claude_code` | ✅ Production | v0.1 |
+| [Obsidian](https://obsidian.md) (input) | `llmwiki.adapters.obsidian` | ✅ Production | v0.1 |
+| [Obsidian](https://obsidian.md) (output) | `llmwiki.obsidian_output` | ✅ Production | v0.2 |
+| [Codex CLI](https://github.com/openai/codex) | `llmwiki.adapters.codex_cli` | ✅ Production | v0.3 |
+| [Cursor](https://cursor.com) | `llmwiki.adapters.cursor` | 🟡 Discovery scaffold | v0.2 |
+| [Gemini CLI](https://ai.google.dev/gemini-api) | `llmwiki.adapters.gemini_cli` | 🟡 Discovery scaffold | v0.3 |
+| PDF files | `llmwiki.adapters.pdf` | 🟡 Scaffold (requires `pypdf` + config) | v0.3 |
+| OpenCode / OpenClaw | — | ⏸ Deferred to v0.5+ | — |
 
-Adding a new agent is [one small file](docs/architecture.md#adding-an-adapter).
+Adding a new agent is [one small file](docs/framework.md) — subclass `BaseAdapter`, declare `SUPPORTED_SCHEMA_VERSIONS`, ship a fixture + snapshot test.
+
+## MCP server
+
+llmwiki ships its own MCP server (stdio transport, no SDK dependency) so any MCP client can query your wiki directly.
+
+```bash
+python3 -m llmwiki.mcp   # runs on stdin/stdout
+```
+
+Seven production tools:
+
+| Tool | What |
+|---|---|
+| `wiki_query(question, max_pages)` | Keyword search + page content (no LLM synthesis) |
+| `wiki_search(term, include_raw)` | Raw grep over wiki/ (+ optional raw/) |
+| `wiki_list_sources(project)` | List raw source files with metadata |
+| `wiki_read_page(path)` | Read one page (path-traversal guarded) |
+| `wiki_lint()` | Orphans + broken-wikilinks report |
+| `wiki_sync(dry_run)` | Trigger the converter |
+| `wiki_export(format)` | Return any AI-consumable export (llms.txt, jsonld, sitemap, rss, manifest) |
+
+Register in your MCP client's config — e.g. for Claude Desktop, add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "llmwiki": {
+      "command": "python3",
+      "args": ["-m", "llmwiki.mcp"]
+    }
+  }
+}
+```
 
 ## Configuration
 
@@ -138,11 +241,29 @@ Single JSON config at `examples/sessions_config.json`. Copy to `config.json` and
   "truncation": {
     "tool_result_chars": 500,
     "bash_stdout_lines": 5
+  },
+  "adapters": {
+    "obsidian": {
+      "vault_paths": ["~/Documents/Obsidian Vault"]
+    }
   }
 }
 ```
 
-All paths, regexes, and truncation limits are tunable. See [docs/configuration.md](docs/configuration.md).
+All paths, regexes, truncation limits, and per-adapter settings are tunable. See [docs/configuration.md](docs/configuration.md).
+
+## `.llmwikiignore`
+
+Gitignore-style pattern file at the repo root. Skip entire projects, dates, or specific sessions without touching config:
+
+```
+# Skip a whole project
+confidential-client/
+# Skip anything before a date
+*2025-*
+# Keep exception
+!confidential-client/public-*
+```
 
 ## Karpathy's LLM Wiki pattern
 
@@ -156,17 +277,48 @@ See [docs/architecture.md](docs/architecture.md) for the full breakdown and how 
 
 ## Design principles
 
-- **Stdlib first** — only mandatory runtime dep is `markdown`. `pygments` is optional.
+- **Stdlib first** — only mandatory runtime dep is `markdown`. `pygments` and `pypdf` are optional.
 - **Works offline** — no CDN, no fonts from Google by default (use system fonts).
 - **Redact by default** — username, API keys, tokens, emails all get redacted before entering the wiki.
 - **Idempotent everything** — re-running any command is safe and cheap.
 - **Agent-agnostic core** — the converter doesn't know which agent produced the `.jsonl`; adapters translate.
+- **Privacy by default** — localhost-only binding, no telemetry, no cloud calls.
+- **Dual-format output (v0.4)** — every page ships both for humans (HTML) and AI agents (TXT + JSON + JSON-LD + sitemap + llms.txt).
+
+## Docs
+
+- [Getting started](docs/getting-started.md) — 5-minute quickstart
+- [Architecture](docs/architecture.md) — Karpathy 3-layer + 8-layer build breakdown
+- [Configuration](docs/configuration.md) — every tuning knob
+- [Privacy](docs/privacy.md) — redaction rules + `.llmwikiignore` + localhost binding
+- [Windows setup](docs/windows-setup.md) — Windows-specific gotchas
+- [Framework](docs/framework.md) — Open Source Framework v4.1 adapted for agent-native dev tools
+- [Research](docs/research.md) — Phase 1.25 analysis of 15 prior LLM Wiki implementations
+- [Feature matrix](docs/feature-matrix.md) — all 161 features across 16 categories
+- [Roadmap](docs/roadmap.md) — Phase × Layer × Item MoSCoW table
+- [v0.4 roadmap](docs/v0.4-roadmap.md) — AI & Human Dual-Format plan
+- **Translations**: [i18n/zh-CN](docs/i18n/zh-CN/), [i18n/ja](docs/i18n/ja/), [i18n/es](docs/i18n/es/)
+
+Per-adapter docs:
+- [Claude Code adapter](docs/adapters/claude-code.md)
+- [Codex CLI adapter](docs/adapters/codex-cli.md)
+- [Obsidian adapter](docs/adapters/obsidian.md)
+
+## Releases
+
+| Version | Focus | Tag |
+|---|---|---|
+| [v0.1.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.1.0) | Core release — Claude Code adapter, god-level HTML UI, schema, CI, plugin scaffolding | `v0.1.0` |
+| [v0.2.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.2.0) | Extensions — 3 new slash commands, 3 new adapters, Obsidian bidirectional, full MCP server | `v0.2.0` |
+| [v0.3.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.3.0) | PyPI packaging, eval framework, i18n scaffold | `v0.3.0` |
+| **v0.4.0** | **AI + human dual format** — per-page .txt/.json siblings, llms.txt, JSON-LD graph, sitemap, RSS, schema.org microdata, reading time, related pages, activity heatmap, deep-link anchors, build manifest, link checker, `wiki_export` MCP tool | `v0.4.0` |
 
 ## Acknowledgements
 
 - [Andrej Karpathy](https://twitter.com/karpathy) for [the LLM Wiki idea](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - [SamurAIGPT/llm-wiki-agent](https://github.com/SamurAIGPT/llm-wiki-agent), [lucasastorian/llmwiki](https://github.com/lucasastorian/llmwiki), [xoai/sage-wiki](https://github.com/xoai/sage-wiki), and [bashiraziz/llm-wiki-template](https://github.com/bashiraziz/llm-wiki-template) — prior art that shaped this.
 - [Python Markdown](https://python-markdown.github.io/) and [Pygments](https://pygments.org/) for the rendering pipeline.
+- [llmstxt.org](https://llmstxt.org) for the llms.txt spec used in v0.4.
 
 ## License
 

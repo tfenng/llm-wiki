@@ -8,6 +8,55 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-08
+
+**Theme:** AI + human dual-format. Every page ships both as HTML for humans AND as machine-readable `.txt` + `.json` siblings for AI agents, alongside site-level exports that follow open standards (`llms.txt`, JSON-LD, sitemap, RSS).
+
+### Added
+
+#### Part A — AI-consumable exports (`llmwiki/exporters.py`)
+
+- **`llms.txt`** — short index per the [llmstxt.org spec](https://llmstxt.org) with project list, machine-readable links, and AI-agent entry points
+- **`llms-full.txt`** — flattened plain-text dump of every wiki page, ordered project → date, capped at 5 MB for pasteable LLM context
+- **`graph.jsonld`** — schema.org JSON-LD `@graph` representation with `CreativeWork` nodes for the wiki, projects, and individual sessions, all linked via `isPartOf` relations
+- **`sitemap.xml`** — standard sitemap with `lastmod` timestamps and priority hints
+- **`rss.xml`** — RSS 2.0 feed of the newest 50 sessions
+- **`robots.txt`** — with explicit `llms.txt` + `sitemap.xml` references for AI-agent-aware crawlers
+- **`ai-readme.md`** — AI-specific entry point explaining navigation structure, machine-readable siblings, and MCP tool surface
+- **Per-page `.txt` siblings** next to every `sessions/<project>/<slug>.html` — plain text version stripped of all markdown/HTML for fast AI consumption
+- **Per-page `.json` siblings** with structured frontmatter + body text + SHA-256 + outbound wikilinks — ideal for RAG or structured-data agents
+- **Schema.org microdata** on every session page (`itemscope`/`itemtype="https://schema.org/Article"` + `headline` + `datePublished` + `inLanguage`)
+- **`<link rel="canonical">`** on every session page for SEO and duplicate-indexing prevention
+- **Open Graph tags** (`og:type`, `og:title`, `og:description`, `article:published_time`)
+- **`<!-- llmwiki:metadata -->` HTML comment** at the top of every session page — AI agents scraping HTML can parse metadata without fetching the separate `.json` sibling
+- **`wiki_export` MCP tool** (7th tool on the MCP server) — returns any AI-consumable export format by name (`llms-txt`, `llms-full-txt`, `jsonld`, `sitemap`, `rss`, `manifest`, or `list`). Capped at 200 KB per response.
+
+#### Part B — Human polish
+
+- **Reading time estimates** on every session page (`X min read` in the metadata strip)
+- **Related pages panel** at the bottom of session pages (3-5 related sessions computed from shared project + entities, all client-side from `search-index.json`)
+- **Activity heatmap** on the home page — SVG cells with per-day intensity gradient
+- **Mark highlighting** support (`<mark>` styled with the accent color) for search results
+- **Deep-link icons** on every `h2`/`h3`/`h4` in the content — hover to reveal, click to copy a canonical URL with `#anchor` to the clipboard
+- **`.txt` and `.json` download buttons** in the session-actions strip next to Copy-as-markdown
+
+#### Part C — Cross-cutting infra
+
+- **Build manifest** (`llmwiki/manifest.py`) — generates `site/manifest.json` on every build with SHA-256 hashes of all files, total sizes, perf-budget check, and budget violations list
+- **Link checker** (`llmwiki/link_checker.py`) — walks `site/` verifying every internal `<a href>`, `<link href>`, and `<script src>` resolves to an existing file. External URLs are skipped. Strict regex filters out code-block artifacts.
+- **Performance budget** targets declared in `manifest.py` (cold build <30s, total site <150 MB, per-page <3 MB, CSS+JS <200 KB, `llms-full.txt` <10 MB)
+- **New CLI subcommands**: `llmwiki check-links`, `llmwiki export <format>`, `llmwiki manifest` (all with `--fail-on-*` flags for CI integration)
+
+### Tests
+
+- **24 new tests** in `tests/test_v04.py` covering exporters, manifest, link checker, MCP `wiki_export`, schema.org microdata, canonical links, per-page siblings, and CLI subcommands
+- **95 tests passing total** (was 71 in v0.3)
+
+### Fixed
+
+- Link checker rewritten to only match `<a>` / `<link>` / `<script>` tag hrefs (not URLs inside code blocks). The initial naive regex was catching runaway multi-line matches from rendered tool-result output.
+- Canonical URLs and `.txt`/`.json` sibling links now use the actual HTML filename stem (`date-slug`) instead of the frontmatter `slug` field, which was causing broken link reports.
+
 ## [0.3.0] — 2026-04-08
 
 ### Added

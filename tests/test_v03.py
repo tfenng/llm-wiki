@@ -15,8 +15,10 @@ from tests.conftest import REPO_ROOT
 # ─── version bump ────────────────────────────────────────────────────────
 
 
-def test_version_is_v03():
-    assert __version__.startswith("0.3"), f"expected 0.3.x, got {__version__}"
+def test_version_is_at_least_v03():
+    """v0.3 introduced pyproject. Any version >= 0.3 must continue to work."""
+    major, minor, *_ = __version__.split(".")
+    assert int(major) > 0 or int(minor) >= 3, f"expected >= 0.3, got {__version__}"
 
 
 # ─── pyproject.toml ──────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ def test_pyproject_exists():
     content = p.read_text(encoding="utf-8")
     # Minimal sanity
     assert 'name = "llmwiki"' in content
-    assert 'version = "0.3' in content
+    assert 'version = "0.' in content
     assert "markdown" in content
     assert "[project.scripts]" in content
 
