@@ -41,6 +41,10 @@ classifiers = [
     "Topic :: Documentation",
     "Topic :: Software Development :: Documentation",
     "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: Pytest",
+    "Typing :: Typed",
+    "Natural Language :: English",
 ]
 dependencies = [
     "markdown>=3.4",

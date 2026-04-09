@@ -13,10 +13,13 @@ Rebuilt on every `master` push from the synthetic sessions in [`examples/demo-se
 [![Tests](https://img.shields.io/badge/tests-472%20passing-10B981.svg)](tests/)
 [![Works with Claude Code](https://img.shields.io/badge/Claude%20Code-✓-7C3AED.svg)](https://claude.com/claude-code)
 [![Works with Codex CLI](https://img.shields.io/badge/Codex%20CLI-✓-7C3AED.svg)](https://github.com/openai/codex)
+[![Works with Copilot](https://img.shields.io/badge/GitHub%20Copilot-✓-7C3AED.svg)](https://github.com/features/copilot)
+[![Works with Cursor](https://img.shields.io/badge/Cursor-✓-7C3AED.svg)](https://cursor.com)
+[![Works with Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-✓-7C3AED.svg)](https://ai.google.dev/gemini-api)
 
 ---
 
-Every Claude Code, Codex CLI, and Cursor session writes a full transcript to disk. You already have hundreds of them and never look at them again.
+Every Claude Code, Codex CLI, Copilot, Cursor, and Gemini CLI session writes a full transcript to disk. You already have hundreds of them and never look at them again.
 
 **llmwiki** turns that dormant history into a beautiful, searchable, interlinked knowledge base — locally, in two commands. Plus, it produces AI-consumable exports (`llms.txt`, `llms-full.txt`, JSON-LD graph, per-page `.txt` + `.json` siblings) so other AI agents can query your wiki directly.
 
@@ -63,6 +66,13 @@ All screenshots below are from the **public demo site** which is built on every 
   - Reading time estimates (`X min read`)
   - Related pages panel at the bottom of every session
   - Activity heatmap on the home page
+  - Model info cards with structured schema (provider, pricing, benchmarks)
+  - Auto-generated vs-comparison pages between AI models
+  - Append-only changelog timeline with pricing sparkline
+  - Project topic chips (GitHub-style tags on project cards)
+  - Agent labels (colored badges: Claude/Codex/Copilot/Cursor/Gemini)
+  - Recently-updated card on the home page
+  - Dataview-style structured queries in the command palette
   - Hover-to-preview wikilinks
   - Deep-link icons next to every heading
   - Mobile-responsive + print-friendly
@@ -296,6 +306,7 @@ llmwiki export-qmd              # export wiki as a qmd collection (v0.6)
 llmwiki eval                    # 7-check structural quality score /100 (v0.3)
 llmwiki check-links             # verify internal links in site/ (v0.4)
 llmwiki export <format>         # AI-consumable exports (v0.4)
+llmwiki synthesize              # auto-ingest synthesis pipeline (v0.5)
 llmwiki manifest                # build site manifest + perf budget (v0.4)
 llmwiki version
 ```
@@ -310,10 +321,12 @@ Each subcommand has its own `--help`. All commands are also wrapped in one-click
 | [Obsidian](https://obsidian.md) (input) | `llmwiki.adapters.obsidian` | ✅ Production | v0.1 |
 | [Obsidian](https://obsidian.md) (output) | `llmwiki.obsidian_output` | ✅ Production | v0.2 |
 | [Codex CLI](https://github.com/openai/codex) | `llmwiki.adapters.codex_cli` | ✅ Production | v0.3 |
-| [Cursor](https://cursor.com) | `llmwiki.adapters.cursor` | 🟡 Discovery scaffold | v0.2 |
-| [Gemini CLI](https://ai.google.dev/gemini-api) | `llmwiki.adapters.gemini_cli` | 🟡 Discovery scaffold | v0.3 |
-| PDF files | `llmwiki.adapters.pdf` | 🟡 Scaffold (requires `pypdf` + config) | v0.3 |
-| OpenCode / OpenClaw | — | ⏸ Deferred to v0.5+ | — |
+| [Cursor](https://cursor.com) | `llmwiki.adapters.cursor` | ✅ Production | v0.5 |
+| [Gemini CLI](https://ai.google.dev/gemini-api) | `llmwiki.adapters.gemini_cli` | ✅ Production | v0.5 |
+| PDF files | `llmwiki.adapters.pdf` | ✅ Production | v0.5 |
+| [Copilot Chat](https://github.com/features/copilot) | `llmwiki.adapters.copilot_chat` | ✅ Production | v0.9 |
+| [Copilot CLI](https://github.com/features/copilot) | `llmwiki.adapters.copilot_cli` | ✅ Production | v0.9 |
+| OpenCode / OpenClaw | — | ⏸ Deferred | — |
 
 Adding a new agent is [one small file](docs/framework.md) — subclass `BaseAdapter`, declare `SUPPORTED_SCHEMA_VERSIONS`, ship a fixture + snapshot test.
 
@@ -436,6 +449,8 @@ Per-adapter docs:
 - [Gemini CLI adapter](docs/adapters/gemini-cli.md)
 - [Obsidian adapter](docs/adapters/obsidian.md)
 - [PDF adapter](docs/adapters/pdf.md)
+- [Copilot Chat adapter](docs/adapters/copilot-chat.md)
+- [Copilot CLI adapter](docs/adapters/copilot-cli.md)
 
 ## Releases
 
@@ -445,18 +460,27 @@ Per-adapter docs:
 | [v0.2.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.2.0) | Extensions — 3 new slash commands, 3 new adapters, Obsidian bidirectional, full MCP server | `v0.2.0` |
 | [v0.3.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.3.0) | PyPI packaging, eval framework, i18n scaffold | `v0.3.0` |
 | [v0.4.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.4.0) | AI + human dual format — per-page .txt/.json siblings, llms.txt, JSON-LD graph, sitemap, RSS, schema.org microdata, reading time, related pages, activity heatmap, deep-link anchors, build manifest, link checker, `wiki_export` MCP tool | `v0.4.0` |
+| [v0.5.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.5.0) | Folder-level `_context.md`, auto-ingest, 3 adapter graduations (Cursor, Gemini CLI, PDF), lazy search index, scheduled sync templates, WCAG accessibility, Playwright E2E tests | `v0.5.0` |
+| [v0.6.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.6.0) | qmd export, GitLab Pages CI, PyPI release automation, maintainer governance scaffold | `v0.6.0` |
+| [v0.7.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.7.0) | Structured model-profile schema, auto-generated vs-comparison pages, append-only changelog timeline | `v0.7.0` |
+| [v0.8.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.8.0) | 365-day activity heatmap, tool-calling bar chart, token usage card, session metrics frontmatter | `v0.8.0` |
+| [v0.9.0](https://github.com/Pratiyush/llm-wiki/releases/tag/v0.9.0) | Project topics, agent labels (Claude/Codex/Copilot/Cursor/Gemini badges), Copilot adapters, image pipeline, highlight.js, public demo deployment | `v0.9.0` |
 
 ## Roadmap
 
-Active milestones on GitHub: [v0.5.0](https://github.com/Pratiyush/llm-wiki/milestone/4) · [v0.6.0](https://github.com/Pratiyush/llm-wiki/milestone/5) · [v0.7.0](https://github.com/Pratiyush/llm-wiki/milestone/7) · [v0.8.0](https://github.com/Pratiyush/llm-wiki/milestone/8) · [v0.4.x polish](https://github.com/Pratiyush/llm-wiki/milestone/6).
+Shipped milestones:
+
+- **v0.5.0** — Folder-level `_context.md`, auto-ingest, adapter graduations, lazy search index, scheduled sync, WCAG, E2E tests ([milestone](https://github.com/Pratiyush/llm-wiki/milestone/4))
+- **v0.6.0** — qmd export, GitLab Pages CI, PyPI release automation, maintainer governance scaffold ([milestone](https://github.com/Pratiyush/llm-wiki/milestone/5))
+- **v0.7.0** — Structured model-profile schema, vs-comparison pages, append-only changelog timeline ([milestone](https://github.com/Pratiyush/llm-wiki/milestone/7))
+- **v0.8.0** — 365-day activity heatmap, tool-calling bar chart, token usage card, session metrics frontmatter ([milestone](https://github.com/Pratiyush/llm-wiki/milestone/8))
+- **v0.9.0** — Project topics, agent labels, Copilot adapters, image pipeline, highlight.js, public demo deployment
+
+Active milestone:
 
 | Milestone | Focus | Tracking |
 |---|---|---|
-| **v0.5.0 — Synthesis & Automation** | Optional local LLM synthesis via Ollama, auto-ingest hook on sync, candidate/approval workflow, `_context.md` folder metadata, and graduating three scaffold adapters (Cursor, Gemini CLI, PDF) to production. Default install stays stdlib + `markdown` only. | [Epic #34](https://github.com/Pratiyush/llm-wiki/issues/34) |
-| **v0.6.0 — Distribution & Reach** | `brew install llmwiki`, PyPI release automation via OIDC, two more adapters (OpenCode/OpenClaw, ChatGPT conversation export, qmd export), content-freshness badges, and GitLab Pages deployment workflow alongside the existing GitHub Pages one. | [Epic #40](https://github.com/Pratiyush/llm-wiki/issues/40) |
-| **v0.7.0 — Structured Data** | Structured model-profile schema with YAML frontmatter (context window, pricing, license, benchmarks), append-only changelog field for time-series tracking, and auto-generated vs-comparison pages. | [Milestone](https://github.com/Pratiyush/llm-wiki/milestone/7) |
-| **v0.8.0 — Analytics & Visualization** | Session metrics frontmatter, GitLab-style activity heatmap, per-session tool-calling bar chart, and token-usage card with cache-hit-ratio — all rendered as pure SVG at build time (stdlib only). | [Milestone](https://github.com/Pratiyush/llm-wiki/milestone/8) |
-| **v0.4.x — Quality & Polish** | Cross-cutting quality work — Playwright E2E tests, WCAG 2.1 AA accessibility audit, lazy-loading the search index in per-project chunks, and scheduled-sync templates for launchd/systemd/Windows Task Scheduler. | [Milestone](https://github.com/Pratiyush/llm-wiki/milestone/6) |
+| **v1.0.0** | Knowledge graph explorer, light mode polish, interactive graph visualization | [Milestone](https://github.com/Pratiyush/llm-wiki/milestone/9) |
 
 ### Deployment targets
 

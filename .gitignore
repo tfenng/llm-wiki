@@ -121,6 +121,9 @@ Thumbs.db
 .codex/sessions/
 .codex/cache/
 
+# ─── Marketing playbook (local planning doc, not committed) ──────────────
+_marketing-playbook.md
+
 # ─── Personal framework reference (local-only) ───────────────────────────
 # Pratiyush's Open Source Framework v4.0 notes — kept here for reference
 # while building but NOT committed (personal process docs).

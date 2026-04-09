@@ -1,0 +1,58 @@
+# GitHub Action metadata — lets other repos use this as:
+#
+#   - uses: Pratiyush/llm-wiki@v0.9
+#     with:
+#       python-version: "3.12"
+#       additional-args: "--adapter claude-code"
+
+name: llm-wiki
+description: Build an LLM wiki from your AI coding sessions
+author: Pratiyush
+
+branding:
+  icon: book-open
+  color: purple
+
+inputs:
+  python-version:
+    description: "Python version to set up"
+    required: false
+    default: "3.12"
+  additional-args:
+    description: "Extra arguments forwarded to `llmwiki sync`"
+    required: false
+    default: ""
+
+outputs:
+  site-dir:
+    description: "Absolute path to the generated site/ directory"
+    value: ${{ steps.paths.outputs.site-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install llmwiki
+      shell: bash
+      run: pip install llmwiki
+
+    - name: Initialise directory structure
+      shell: bash
+      run: llmwiki init
+
+    - name: Sync sessions
+      shell: bash
+      run: llmwiki sync ${{ inputs.additional-args }}
+
+    - name: Build static site
+      shell: bash
+      run: llmwiki build
+
+    - name: Expose output paths
+      id: paths
+      shell: bash
+      run: echo "site-dir=$(pwd)/site" >> "$GITHUB_OUTPUT"
