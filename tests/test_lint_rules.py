@@ -80,6 +80,44 @@ def test_completeness_empty_frontmatter():
     assert len(issues) == 1
 
 
+def test_completeness_exempts_system_files():
+    """Nav/system files don't need title/type."""
+    pages = {
+        "index.md": _mk_page({}, ""),
+        "log.md": _mk_page({}, ""),
+        "overview.md": _mk_page({}, ""),
+        "hints.md": _mk_page({}, ""),
+        "hot.md": _mk_page({}, ""),
+        "MEMORY.md": _mk_page({}, ""),
+        "SOUL.md": _mk_page({}, ""),
+        "CRITICAL_FACTS.md": _mk_page({}, ""),
+        "dashboard.md": _mk_page({}, ""),
+    }
+    issues = FrontmatterCompleteness().run(pages)
+    assert issues == []
+
+
+def test_completeness_exempts_context_stubs():
+    """_context.md stubs don't need title/type."""
+    pages = {
+        "sources/_context.md": _mk_page({}, ""),
+        "entities/_context.md": _mk_page({}, ""),
+    }
+    issues = FrontmatterCompleteness().run(pages)
+    assert issues == []
+
+
+def test_completeness_still_flags_regular_pages():
+    """Non-system pages still need title/type."""
+    pages = {
+        "entities/Foo.md": _mk_page({}, ""),
+        "index.md": _mk_page({}, ""),  # exempt
+    }
+    issues = FrontmatterCompleteness().run(pages)
+    assert len(issues) == 1
+    assert issues[0]["page"] == "entities/Foo.md"
+
+
 # ─── 2. FrontmatterValidity ──────────────────────────────────────────
 
 

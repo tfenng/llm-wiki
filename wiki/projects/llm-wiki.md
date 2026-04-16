@@ -1,4 +1,7 @@
 ---
+title: "llm-wiki"
+type: entity
+entity_type: project
 project: llm-wiki
 topics: [python, wiki, karpathy, claude-code, static-site, markdown, open-source]
 description: "The llmwiki framework itself — a Karpathy-style LLM knowledge base compiled from Claude Code session transcripts. Stdlib Python, no server, no database."
