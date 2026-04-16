@@ -28,39 +28,9 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-# ─── Tag scanning ──────────────────────────────────────────────────────
-
-# Noise tags that should never become a category (too broad or too common)
-NOISE_TAGS: set[str] = {
-    "claude-code",
-    "session-transcript",
-    "demo",
-    "",
-}
-
-
-def _parse_tags(raw: str) -> list[str]:
-    """Parse the YAML ``tags:`` value into a cleaned list of tag strings."""
-    if not raw:
-        return []
-    # strip surrounding [ ]
-    raw = raw.strip()
-    if raw.startswith("[") and raw.endswith("]"):
-        raw = raw[1:-1]
-    # split on commas
-    parts = [p.strip().strip('"').strip("'") for p in raw.split(",")]
-    return [p.lower() for p in parts if p and p.lower() not in NOISE_TAGS]
-
-
-def scan_tags(pages: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
-    """Scan all pages and return ``{tag: [page_rel, ...]}``."""
-    out: dict[str, list[str]] = {}
-    for rel, page in pages.items():
-        raw_tags = page["meta"].get("tags", "")
-        for tag in _parse_tags(raw_tags):
-            out.setdefault(tag, []).append(rel)
-    # Sort page lists for deterministic output
-    return {tag: sorted(pages_) for tag, pages_ in out.items()}
+# Shared tag parser + NOISE_TAGS live in llmwiki.tag_utils so
+# llmwiki/search_facets.py uses the same implementation.
+from llmwiki.tag_utils import NOISE_TAGS, parse_tags_field as _parse_tags, scan_tags
 
 
 # ─── Dataview output ──────────────────────────────────────────────────

@@ -307,9 +307,9 @@ Run `llmwiki schedule` to generate the right scheduled task file for your OS fro
 
 | OS | Auto-generate | Static template | Install guide |
 |---|---|---|---|
-| macOS | `llmwiki schedule --platform macos` | [`launchd.plist`](docs/scheduled-sync/launchd.plist) | [docs/scheduled-sync.md](docs/scheduled-sync.md#macos-launchd) |
-| Linux | `llmwiki schedule --platform linux` | [`systemd.timer`](docs/scheduled-sync/llmwiki-sync.timer) + [`.service`](docs/scheduled-sync/llmwiki-sync.service) | [docs/scheduled-sync.md](docs/scheduled-sync.md#linux-systemd) |
-| Windows | `llmwiki schedule --platform windows` | [`task.xml`](docs/scheduled-sync/llmwiki-sync-task.xml) | [docs/scheduled-sync.md](docs/scheduled-sync.md#windows-task-scheduler) |
+| macOS | `llmwiki schedule --platform macos` | [`launchd.plist`](examples/scheduled-sync-templates/launchd.plist) | [docs/scheduled-sync.md](docs/scheduled-sync.md#macos-launchd) |
+| Linux | `llmwiki schedule --platform linux` | [`systemd.timer`](examples/scheduled-sync-templates/llmwiki-sync.timer) + [`.service`](examples/scheduled-sync-templates/llmwiki-sync.service) | [docs/scheduled-sync.md](docs/scheduled-sync.md#linux-systemd) |
+| Windows | `llmwiki schedule --platform windows` | [`task.xml`](examples/scheduled-sync-templates/llmwiki-sync-task.xml) | [docs/scheduled-sync.md](docs/scheduled-sync.md#windows-task-scheduler) |
 
 Cadence (`daily` / `weekly` / `hourly`), hour/minute, and paths are all configurable in `examples/sessions_config.json`. See [`docs/scheduled-sync.md`](docs/scheduled-sync.md) for full instructions.
 

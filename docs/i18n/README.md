@@ -4,14 +4,21 @@ Translations of llmwiki's user-facing documentation. All translations track
 the English master in `docs/`. If a translation falls behind, a note at the
 top of the file says so.
 
+> [!NOTE]
+> **Status at v1.0:** Translation scaffolds were seeded at v0.3 but have
+> **not been actively maintained** since. The English docs under `docs/`
+> are the source of truth and have evolved substantially through v0.4–v1.0.
+> The zh-CN / ja / es files below are kept as structure for future
+> contributors — PRs welcome.
+
 ## Available
 
 | Language | Code | Page | Status |
 |---|---|---|---|
 | English | `en` | `../getting-started.md` | ✅ canonical |
-| 中文 (简体) | `zh-CN` | `zh-CN/getting-started.md` | 🟡 scaffold (v0.3) |
-| 日本語 | `ja` | `ja/getting-started.md` | 🟡 scaffold (v0.3) |
-| Español | `es` | `es/getting-started.md` | 🟡 scaffold (v0.3) |
+| 中文 (简体) | `zh-CN` | `zh-CN/getting-started.md` | 🟠 stale scaffold (v0.3) |
+| 日本語 | `ja` | `ja/getting-started.md` | 🟠 stale scaffold (v0.3) |
+| Español | `es` | `es/getting-started.md` | 🟠 stale scaffold (v0.3) |
 
 ## Scope
 

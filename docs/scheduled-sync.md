@@ -13,7 +13,7 @@ Templates are provided for macOS, Linux, and Windows.
 1. Copy the plist and edit the paths:
 
 ```bash
-cp docs/scheduled-sync/launchd.plist ~/Library/LaunchAgents/com.llmwiki.sync.plist
+cp examples/scheduled-sync-templates/launchd.plist ~/Library/LaunchAgents/com.llmwiki.sync.plist
 ```
 
 2. Edit `~/Library/LaunchAgents/com.llmwiki.sync.plist`:
@@ -50,8 +50,8 @@ rm ~/Library/LaunchAgents/com.llmwiki.sync.plist
 1. Copy both unit files:
 
 ```bash
-sudo cp docs/scheduled-sync/llmwiki-sync.service /etc/systemd/system/
-sudo cp docs/scheduled-sync/llmwiki-sync.timer /etc/systemd/system/
+sudo cp examples/scheduled-sync-templates/llmwiki-sync.service /etc/systemd/system/
+sudo cp examples/scheduled-sync-templates/llmwiki-sync.timer /etc/systemd/system/
 ```
 
 2. Edit `/etc/systemd/system/llmwiki-sync.service`:

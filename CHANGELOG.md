@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Versions below 1.0 are pre-production — API and file formats may change.
 
+## [Unreleased] — post-v1.0 cleanup
+
+### Added
+
+- `llmwiki/tag_utils.py` — shared tag-parsing module. Consolidates the byte-identical `_parse_tags_field()` + `NOISE_TAGS` that were duplicated in `categories.py` and `search_facets.py`. 19 tests covering parsing, noise filtering, deterministic scan order, and backwards-compat re-exports.
+
+### Changed
+
+- `examples/scheduled-sync-templates/` — moved from `docs/scheduled-sync/`. The `llmwiki schedule` CLI (v1.0) generates these dynamically from config; the static files are now kept as reference templates in `examples/` alongside other config samples. README in the new folder explains the preferred generator workflow. README + docs/scheduled-sync.md + docs/content-drafts/blog-tutorial.md updated to point at the new path.
+- `docs/i18n/README.md` — added a `!NOTE` admonition calling out that the zh-CN/ja/es translation scaffolds have not been maintained since v0.3. Status column relabeled from "scaffold (v0.3)" to "stale scaffold (v0.3)".
+
+### Removed
+
+- `.github/ISSUE_TEMPLATE/bug_report.md` — superseded by `bug_report.yml`
+- `.github/ISSUE_TEMPLATE/feature_request.md` — superseded by `feature_request.yml`
+- Duplicated tag-parser code in `categories.py` and `search_facets.py` (now both `from llmwiki.tag_utils import ...`)
+
 ## [1.0.0] — 2026-04-16
 
 **Theme:** v1.0 — Production-ready Obsidian integration. llmwiki graduates from a session-archive tool into a full LLM-maintained knowledge base with quality metrics, lifecycle states, Obsidian-native UX, and a 12-tool MCP server.
