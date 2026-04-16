@@ -125,7 +125,7 @@ To sync automatically every time you start Claude Code, add a `SessionStart` hoo
 }
 ```
 
-For daily scheduled syncs (without Claude Code), there are ready-to-install templates for macOS launchd, Linux systemd, and Windows Task Scheduler in the `docs/scheduled-sync/` directory.
+For daily scheduled syncs (without Claude Code), run `llmwiki schedule` to auto-generate the task file for your OS, or copy a reference template from `examples/scheduled-sync-templates/` (macOS launchd, Linux systemd, Windows Task Scheduler).
 
 ## Step 7 (optional): Deploy to GitHub Pages
 

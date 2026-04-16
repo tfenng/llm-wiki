@@ -18,24 +18,9 @@ from __future__ import annotations
 
 from typing import Any
 
-
-NOISE_TAGS: set[str] = {
-    "claude-code",
-    "session-transcript",
-    "demo",
-    "",
-}
-
-
-def _parse_tags_field(raw: str) -> list[str]:
-    """Parse a comma-separated tags field, filter noise, lowercase."""
-    if not raw:
-        return []
-    raw = str(raw).strip()
-    if raw.startswith("[") and raw.endswith("]"):
-        raw = raw[1:-1]
-    parts = [p.strip().strip('"').strip("'") for p in raw.split(",")]
-    return [p.lower() for p in parts if p and p.lower() not in NOISE_TAGS]
+# Shared tag parser + NOISE_TAGS live in llmwiki.tag_utils so
+# llmwiki/categories.py uses the same implementation.
+from llmwiki.tag_utils import NOISE_TAGS, parse_tags_field as _parse_tags_field
 
 
 def _parse_confidence(raw: Any) -> float:
