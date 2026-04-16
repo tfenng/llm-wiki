@@ -43,9 +43,22 @@ class FrontmatterCompleteness(LintRule):
 
     REQUIRED = ["title", "type"]
 
+    # System-level nav files and _context.md stubs are exempt from the
+    # strict title/type requirement. Index/log/overview are auto-generated
+    # or human-curated hubs and don't fit the source/entity/concept schema.
+    EXEMPT_FILES = {
+        "index.md", "overview.md", "log.md",
+        "hints.md", "hot.md", "MEMORY.md",
+        "SOUL.md", "CRITICAL_FACTS.md", "dashboard.md",
+    }
+
     def run(self, pages, *, llm_callback=None):
         issues = []
         for rel, page in pages.items():
+            # Skip system nav files and _context.md stubs
+            basename = rel.rsplit("/", 1)[-1]
+            if basename in self.EXEMPT_FILES or basename == "_context.md":
+                continue
             meta = page["meta"]
             missing = [f for f in self.REQUIRED if f not in meta]
             if missing:
@@ -66,7 +79,8 @@ class FrontmatterValidity(LintRule):
     severity = "error"
 
     VALID_TYPES = {"source", "entity", "concept", "synthesis",
-                   "comparison", "question", "navigation", "context"}
+                   "comparison", "question", "navigation", "context",
+                   "folder-context"}
     VALID_LIFECYCLES = {s.value for s in LifecycleState}
 
     def run(self, pages, *, llm_callback=None):
