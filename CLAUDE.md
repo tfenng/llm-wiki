@@ -6,6 +6,7 @@ You are maintaining an **LLM Wiki** (per [Karpathy's spec](https://gist.github.c
 
 ```
 raw/           IMMUTABLE. Session transcripts converted from ~/.claude/projects/*/*.jsonl.
+               Flat naming: YYYY-MM-DDTHH-MM-project-slug.md (no subdirectories).
                Never modify files here. Treat as source-of-truth for facts.
 
 wiki/          YOU OWN THIS. LLM-generated pages that summarise, cross-reference, and
@@ -55,7 +56,7 @@ Triggered by `/wiki-ingest <path>` or `/wiki-sync`.
 
 ### Session-derived source specifics
 
-Files under `raw/sessions/<project>/<YYYY-MM-DD>-<slug>.md` are auto-generated from `.jsonl` transcripts. They have rich YAML frontmatter (`project`, `slug`, `started`, `model`, `tools_used`, `gitBranch`, etc.). When ingesting these:
+Files under `raw/sessions/<YYYY-MM-DDTHH-MM>-<project>-<slug>.md` are auto-generated from `.jsonl` transcripts (flat naming, no subdirectories). They have rich YAML frontmatter (`project`, `slug`, `started`, `model`, `tools_used`, `gitBranch`, etc.). When ingesting these:
 
 - **Trust the frontmatter** — don't re-infer metadata from the body
 - **Do NOT copy the Conversation section verbatim** — treat it as raw material to summarize
@@ -72,7 +73,7 @@ title: "Source Title"
 type: source
 tags: [claude-code, session-transcript]
 date: YYYY-MM-DD
-source_file: raw/sessions/<project>/<file>.md
+source_file: raw/sessions/<YYYY-MM-DDTHH-MM>-<project>-<slug>.md
 project: <project-slug>
 model: <model-id>
 ---
