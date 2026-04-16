@@ -36,6 +36,9 @@ wiki/hot/*
 !wiki/entities/_context.md
 !wiki/concepts/_context.md
 !wiki/sources/_context.md
+!wiki/syntheses/_context.md
+!wiki/comparisons/_context.md
+!wiki/questions/_context.md
 # v0.7 (#55, #56): seeded reference model entity ships with the repo
 # so the structured schema + changelog timeline are visible on the
 # live demo build.
