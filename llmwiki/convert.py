@@ -581,6 +581,20 @@ def derive_session_slug(records: list[dict[str, Any]], jsonl_path: Path) -> str:
     return jsonl_path.stem[:12]
 
 
+def flat_output_name(
+    started: datetime,
+    project_slug: str,
+    slug: str,
+) -> str:
+    """Build a flat filename: ``YYYY-MM-DDTHH-MM-project-slug.md``.
+
+    The date+time+project+slug format ensures chronological sort,
+    project traceability, and uniqueness without nested directories.
+    """
+    ts = started.strftime("%Y-%m-%dT%H-%M")
+    return f"{ts}-{project_slug}-{slug}.md"
+
+
 def render_session_markdown(
     records: list[dict[str, Any]],
     jsonl_path: Path,
@@ -621,7 +635,7 @@ def render_session_markdown(
         "type: source",
         "tags: [claude-code, session-transcript]",
         f"date: {date_str}",
-        f"source_file: raw/sessions/{project_slug}/{date_str}-{slug}.md",
+        f"source_file: raw/sessions/{started.strftime('%Y-%m-%dT%H-%M')}-{project_slug}-{slug}.md",
         f"sessionId: {session_id}",
         f"slug: {slug}",
         f"project: {project_slug}",
@@ -787,8 +801,8 @@ def convert_all(
                 if len(text) < 50:
                     filtered += 1
                     continue
-                out_name = path.stem + ".md"
-                out_path = out_dir / project_slug / out_name
+                out_name = f"{project_slug}-{path.stem}.md"
+                out_path = out_dir / out_name
                 if dry_run:
                     print(f"  [dry-run] {out_path.relative_to(REPO_ROOT) if out_path.is_relative_to(REPO_ROOT) else out_path} ({len(text)} bytes)")
                 else:
@@ -809,7 +823,7 @@ def convert_all(
                 if not md:
                     filtered += 1
                     continue
-                out_path = out_dir / project_slug / out_name
+                out_path = out_dir / f"{project_slug}-{out_name}"
                 if dry_run:
                     print(f"  [dry-run] {out_path.relative_to(REPO_ROOT) if out_path.is_relative_to(REPO_ROOT) else out_path} ({len(md)} bytes)")
                 else:
@@ -845,7 +859,8 @@ def convert_all(
                 errors += 1
                 continue
             date_str = started.strftime("%Y-%m-%d")
-            out_path = out_dir / project_slug / f"{date_str}-{slug}.md"
+            out_name = flat_output_name(started, project_slug, slug)
+            out_path = out_dir / out_name
             if dry_run:
                 print(f"  [dry-run] {out_path.relative_to(REPO_ROOT)} ({len(md)} bytes)")
             else:
