@@ -40,6 +40,36 @@ from typing import Any, Mapping, Optional, TypedDict
 
 ENTITY_KIND_AI_MODEL = "ai-model"
 
+# ─── Entity type taxonomy (v1.0, #137) ─────────────────────────────────
+# Seven entity types from the LLM Book design spec (05-metadata-schema.md).
+# Stored in frontmatter as `entity_type: tool` etc.
+
+ENTITY_TYPES: tuple[str, ...] = (
+    "person",    # Individual human
+    "org",       # Company or organization
+    "tool",      # Software tool / service
+    "concept",   # Abstract idea / pattern / framework
+    "api",       # API or protocol
+    "library",   # Code library / framework / package
+    "project",   # Named product / project
+)
+
+
+def validate_entity_type(value: str) -> tuple[bool, str]:
+    """Validate an entity_type frontmatter value.
+
+    Returns (is_valid, message).
+    """
+    if not value:
+        return False, "entity_type is empty"
+    v = value.lower().strip()
+    if v in ENTITY_TYPES:
+        return True, f"entity_type '{v}' is valid"
+    return False, (
+        f"entity_type '{value}' is not valid. "
+        f"Expected one of: {', '.join(ENTITY_TYPES)}"
+    )
+
 # Known benchmark keys get pretty labels in the UI. Unknown keys pass
 # through verbatim (forward-compatible).
 KNOWN_BENCHMARKS: dict[str, str] = {
