@@ -10,6 +10,9 @@ benchmarks: {"gpqa_diamond": 0.680, "swe_bench": 0.595, "mmlu": 0.875, "livecode
 changelog: [{"date": "2026-02-14", "event": "GA launch", "field": "model.released", "from": null, "to": "2026-02-14"}, {"date": "2026-03-01", "event": "Vision + audio modalities added", "field": "modalities", "from": "[text]", "to": "[text, vision, audio]"}]
 last_updated: 2026-04-09
 sources: []
+confidence: 0.56
+lifecycle: reviewed
+entity_type: tool
 ---
 
 # GPT-5
