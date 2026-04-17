@@ -10,6 +10,9 @@ benchmarks: {"gpqa_diamond": 0.725, "swe_bench": 0.619, "mmlu": 0.887, "livecode
 changelog: [{"date": "2026-03-18", "event": "Launched — initial pricing", "field": "model.pricing.input_per_1m", "from": null, "to": 4.00}, {"date": "2026-04-02", "event": "Input pricing cut", "field": "model.pricing.input_per_1m", "from": 4.00, "to": 3.00}, {"date": "2026-04-05", "event": "Context window expanded", "field": "model.context_window", "from": 100000, "to": 200000}, {"date": "2026-04-08", "event": "SWE-bench score updated after v2 evaluation", "field": "benchmarks.swe_bench", "from": 0.582, "to": 0.619}]
 last_updated: 2026-04-09
 sources: []
+confidence: 0.56
+lifecycle: reviewed
+entity_type: tool
 ---
 
 # Claude Sonnet 4

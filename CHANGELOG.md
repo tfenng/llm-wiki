@@ -10,6 +10,8 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 ### Changed
 
+- **Public seed entities enriched with v1.0 metadata** (#140) — `wiki/entities/ClaudeSonnet4.md` and `wiki/entities/GPT5.md` (the two public AI-model seed entities shipped with the repo) now carry `confidence`, `lifecycle`, `entity_type: tool` fields matching the v1.0 schema. Computed confidence: 0.56 for each (no source_count bump since they're structured schema entities with `sources: []`; quality gets "official" due to `entity_kind: ai-model`, recency is current, cross-refs are 0 since no other public wiki pages link to them).
+
 - **PR template upgraded to 15-box pre-merge checklist** — inspired by the Translately platform's contribution rules. New boxes: one intent, breaking-change flagging, UI verified in light AND dark mode (with screenshots), a11y verified (WCAG 2.1 AA minimum), commits GPG-signed with no AI co-author trailers, reviewer reads every changed line. `CONTRIBUTING.md` updated with matching conventional-commit type table (9 types now vs 5 before), 500-line PR size limit, signed-commit branch protection rule. 21 new tests lock the checklist shape.
 
 ### Added
