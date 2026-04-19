@@ -1,4 +1,4 @@
-# Homebrew formula for llmwiki (v0.6 · closes #41)
+# Homebrew formula for llmwiki (v1.1 · #102)
 #
 # Install: brew install Pratiyush/tap/llmwiki
 # Or:      brew tap Pratiyush/tap && brew install llmwiki
@@ -7,6 +7,10 @@
 # reference. To publish it for real, copy it into a Homebrew tap repo
 # at `https://github.com/Pratiyush/homebrew-tap/Formula/llmwiki.rb`
 # and update the `url` + `sha256` on every release.
+#
+# Use `scripts/bump-homebrew-formula.sh vX.Y.Z` to regenerate the `url`
+# and `sha256` fields for a given tag; see docs/deploy/homebrew-setup.md
+# for the full release flow.
 #
 # Users who install via Homebrew get:
 # - `llmwiki` command on PATH (all subcommands: init, sync, build, serve, …)
@@ -19,8 +23,8 @@ class Llmwiki < Formula
 
   desc "LLM-powered knowledge base from Claude Code, Codex CLI, Cursor, and Obsidian sessions"
   homepage "https://github.com/Pratiyush/llm-wiki"
-  url "https://github.com/Pratiyush/llm-wiki/archive/refs/tags/v0.9.0.tar.gz"
-  sha256 "PLACEHOLDER_SHA256_REPLACE_ON_RELEASE"
+  url "https://github.com/Pratiyush/llm-wiki/archive/refs/tags/v1.0.0.tar.gz"
+  sha256 "6150081554932c4c4e8e53a6a2ad514ccf18ba32e7b410c81d641a13cb25e609"
   license "MIT"
   head "https://github.com/Pratiyush/llm-wiki.git", branch: "master"
 
