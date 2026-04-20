@@ -80,6 +80,10 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_sync(args: argparse.Namespace) -> int:
     """Convert .jsonl sessions to markdown using the enabled adapters."""
+    # G-03 (#289): `sync --status` short-circuits into the status reporter.
+    if getattr(args, "status", False):
+        return cmd_sync_status(args)
+
     from llmwiki.convert import convert_all
 
     # v1.2 (#54): vault-overlay mode — resolve the vault early so bad
@@ -200,11 +204,49 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return serve_site(directory=args.dir, port=args.port, host=args.host, open_browser=args.open)
 
 
+def _adapter_status(
+    name: str,
+    adapter_cls: Any,
+    config: dict,
+) -> tuple[str, str]:
+    """Return ``(configured, will_fire)`` labels for one adapter (G-01 · #287).
+
+    * ``configured``: ``explicit`` (user set ``enabled: true`` in the
+      config), ``off`` (user set ``enabled: false``), or ``auto``
+      (default — no explicit toggle).
+    * ``will_fire``: ``yes`` when the next ``sync`` will pick this
+      adapter up (available **and** not explicitly off), ``no``
+      otherwise.
+
+    The old labels — ``-`` / ``enabled`` / ``disabled`` — read as
+    "adapter can't see anything" even when the adapter was discovering
+    471 files on the next line.  The new labels say exactly what they
+    mean without the user cross-referencing ``sessions_config.json``.
+    """
+    adapter_cfg = config.get(name, {})
+    enabled_in_cfg = None
+    if isinstance(adapter_cfg, dict):
+        enabled_in_cfg = adapter_cfg.get("enabled", None)
+    if enabled_in_cfg is True:
+        configured = "explicit"
+    elif enabled_in_cfg is False:
+        configured = "off"
+    else:
+        configured = "auto"
+    available = adapter_cls.is_available()
+    will_fire = "yes" if available and configured != "off" else "no"
+    return configured, will_fire
+
+
 def cmd_adapters(args: argparse.Namespace) -> int:
     """List available adapters and their config state.
 
-    G-02 (#288): ``--wide`` disables the 40-col description cap so the
-    full line prints, useful when piping into ``less`` or documenting.
+    G-01 (#287): ``configured`` column now shows ``auto``/``explicit``/
+    ``off`` (not ``-``/``enabled``/``disabled``) and a new
+    ``will_fire`` column says whether the next ``sync`` will pick the
+    adapter up.
+
+    G-02 (#288): ``--wide`` disables the description cap.
     """
     import json as _json
     import shutil as _shutil
@@ -224,46 +266,44 @@ def cmd_adapters(args: argparse.Namespace) -> int:
             pass
 
     # Description column width: 40 by default, full line with --wide,
-    # or auto-fit to terminal (minus the three fixed columns + gutters).
+    # or auto-fit to terminal (minus the four fixed columns + gutters).
     wide = bool(getattr(args, "wide", False))
     if wide:
         desc_width: Optional[int] = None  # no cap
     else:
         term_cols = _shutil.get_terminal_size(fallback=(80, 24)).columns
-        # Layout: "  name(16)  default(8)  configured(12)  desc" — fixed overhead 44.
-        desc_width = max(40, term_cols - 46)
+        # Layout: "  name(16)  default(8)  configured(10)  will_fire(9)  desc" — fixed overhead ~55.
+        desc_width = max(30, term_cols - 57)
 
     print("Registered adapters:")
-    header_desc = "description" if wide else "description"
-    if wide:
-        print(f"  {'name':<16}  {'default':<8}  {'configured':<12}  {header_desc}")
-        print(f"  {'-' * 16}  {'-' * 8}  {'-' * 12}  {'-' * len(header_desc)}")
-    else:
-        print(f"  {'name':<16}  {'default':<8}  {'configured':<12}  {header_desc}")
-        print(f"  {'-' * 16}  {'-' * 8}  {'-' * 12}  {'-' * desc_width}")
+    dash = "-"
+    header = (
+        f"  {'name':<16}  {'default':<8}  {'configured':<10}  "
+        f"{'will_fire':<9}  description"
+    )
+    print(header)
+    sep_desc = "-" * (desc_width if desc_width is not None else len("description"))
+    print(
+        f"  {dash * 16}  {dash * 8}  {dash * 10}  {dash * 9}  {sep_desc}"
+    )
     for name, adapter_cls in sorted(REGISTRY.items()):
         default_avail = "yes" if adapter_cls.is_available() else "no"
-        # Check if user has enabled this adapter in config
-        adapter_cfg = config.get(name, {})
-        if isinstance(adapter_cfg, dict):
-            enabled_in_cfg = adapter_cfg.get("enabled", None)
-            if enabled_in_cfg is True:
-                configured = "enabled"
-            elif enabled_in_cfg is False:
-                configured = "disabled"
-            else:
-                configured = "-"
-        else:
-            configured = "-"
+        configured, will_fire = _adapter_status(name, adapter_cls, config)
         desc = adapter_cls.description()
         if desc_width is not None and len(desc) > desc_width:
             desc = desc[: max(desc_width - 3, 1)] + "..."
-        print(f"  {name:<16}  {default_avail:<8}  {configured:<12}  {desc}")
+        print(
+            f"  {name:<16}  {default_avail:<8}  {configured:<10}  "
+            f"{will_fire:<9}  {desc}"
+        )
 
     print()
-    print("Adapters marked 'disabled' or '-' under configured require explicit")
-    print("opt-in via sessions_config.json. See examples/sessions_config.json.")
+    print("Columns:")
+    print("  default    — is the adapter's session store present on disk?")
+    print("  configured — auto (default), explicit (enabled:true in config), off (enabled:false)")
+    print("  will_fire  — will `sync` pick this adapter up on its next run?")
     if not wide:
+        print()
         print("Pass --wide to see untruncated descriptions.")
     return 0
 
@@ -274,6 +314,168 @@ def cmd_graph(args: argparse.Namespace) -> int:
     write_json = args.format in ("json", "both")
     write_html = args.format in ("html", "both")
     return build_and_report(write_json_flag=write_json, write_html_flag=write_html)
+
+
+def cmd_log(args: argparse.Namespace) -> int:
+    """Query ``wiki/log.md`` structurally (G-13 · #299).
+
+    Examples::
+
+        llmwiki log                                 # last 10 of any op
+        llmwiki log --since 2026-04-01
+        llmwiki log --operation sync,synthesize
+        llmwiki log --limit 50
+        llmwiki log --format json
+    """
+    import json as _json
+    from datetime import date as _date
+
+    from llmwiki.log_reader import parse_log, recent_events
+
+    log_path = REPO_ROOT / "wiki" / "log.md"
+    if not log_path.is_file():
+        print(f"no log at {log_path.relative_to(REPO_ROOT)}", file=sys.stderr)
+        return 1
+
+    ops: Optional[set[str]] = None
+    if args.operation:
+        ops = {o.strip().lower() for o in args.operation.split(",") if o.strip()}
+
+    events = recent_events(log_path, limit=max(args.limit, 0) or 10**9, operations=ops)
+
+    if args.since:
+        try:
+            cutoff = _date.fromisoformat(args.since)
+        except ValueError:
+            print(f"error: --since must be YYYY-MM-DD, got {args.since!r}", file=sys.stderr)
+            return 2
+        events = [e for e in events if e.date >= cutoff]
+
+    if args.limit > 0:
+        events = events[: args.limit]
+
+    if args.format == "json":
+        print(_json.dumps([
+            {
+                "date": e.date.isoformat(),
+                "operation": e.operation,
+                "title": e.title,
+                "details": e.details,
+            }
+            for e in events
+        ], indent=2))
+        return 0
+
+    if not events:
+        print("No log entries match the filters.")
+        return 0
+
+    # Human-readable output.
+    for e in events:
+        print(f"[{e.date.isoformat()}] {e.operation:<12}  {e.title}")
+        for key, value in e.details.items():
+            print(f"    {key}: {value}")
+    return 0
+
+
+def cmd_sync_status(args: argparse.Namespace) -> int:
+    """Report sync observability — last run, per-adapter counters, quarantined sources.
+
+    G-03 (#289): emits a one-screen status report so operators can see
+    *what synced / what didn't / why*.  Reads ``.llmwiki-state.json``
+    for the last-sync timestamp + per-adapter counters (written there
+    by ``convert_all``) and ``.llmwiki-quarantine.json`` for the failing
+    sources.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    from llmwiki import quarantine as _q
+    from llmwiki.convert import DEFAULT_STATE_FILE
+
+    state: dict = {}
+    if DEFAULT_STATE_FILE.is_file():
+        try:
+            state = _json.loads(DEFAULT_STATE_FILE.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            state = {}
+
+    meta = state.pop("_meta", {}) if isinstance(state, dict) else {}
+    counters = state.pop("_counters", {}) if isinstance(state, dict) else {}
+
+    last_sync = meta.get("last_sync")
+    if last_sync:
+        try:
+            ts = datetime.fromisoformat(last_sync.replace("Z", "+00:00"))
+            delta = datetime.now(timezone.utc) - ts
+            human = f"{int(delta.total_seconds() // 3600)}h ago"
+            print(f"Last sync: {last_sync} ({human})")
+        except ValueError:
+            print(f"Last sync: {last_sync}")
+    else:
+        print("Last sync: never (or pre-upgrade state file)")
+
+    print()
+    if counters:
+        print("Adapters:")
+        header = (
+            f"  {'adapter':<16}  {'discovered':>10}  {'converted':>9}  "
+            f"{'unchanged':>9}  {'live':>5}  {'filtered':>8}  {'errored':>7}"
+        )
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for name, c in sorted(counters.items()):
+            print(
+                f"  {name:<16}  {c.get('discovered', 0):>10}  "
+                f"{c.get('converted', 0):>9}  "
+                f"{c.get('unchanged', 0):>9}  "
+                f"{c.get('live', 0):>5}  "
+                f"{c.get('filtered', 0):>8}  "
+                f"{c.get('errored', 0):>7}"
+            )
+    else:
+        print("No per-adapter counters recorded (run `llmwiki sync` first).")
+
+    print()
+    orphans = [
+        k for k in state.keys()
+        if isinstance(k, str) and k.startswith(tuple(f"{n}::" for n in counters))
+        and not _resolve_key_exists(k)
+    ]
+    if orphans:
+        print(f"Orphan state entries: {len(orphans)} (source path no longer on disk)")
+
+    # Read the module-level default at call time so monkeypatches take effect.
+    quar_counts = _q.count_by_adapter(_q.DEFAULT_QUARANTINE_FILE)
+    if quar_counts:
+        total = sum(quar_counts.values())
+        print(f"Quarantined sources: {total} "
+              f"({', '.join(f'{k}:{v}' for k, v in sorted(quar_counts.items()))})")
+    else:
+        print("Quarantined sources: 0")
+
+    if args.recent:
+        from llmwiki.log_reader import recent_events
+        log_path = REPO_ROOT / "wiki" / "log.md"
+        events = recent_events(log_path, limit=args.recent, operations={"sync", "synthesize"})
+        if events:
+            print()
+            print(f"Recent activity (last {len(events)}):")
+            for e in events:
+                print(f"  [{e.date.isoformat()}] {e.operation:<12} {e.title}")
+
+    return 0
+
+
+def _resolve_key_exists(key: str) -> bool:
+    """Check whether a portable state-file key points at an extant file."""
+    from pathlib import Path as _Path
+    if "::" not in key:
+        return _Path(key).exists()
+    _, rel = key.split("::", 1)
+    candidate = _Path.home() / rel
+    return candidate.exists() or _Path(rel).exists()
 
 
 def cmd_quarantine(args: argparse.Namespace) -> int:
@@ -873,6 +1075,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --vault: allow clobbering existing vault pages "
              "(default: refuse, append under ## Connections instead)",
     )
+    sync.add_argument(
+        "--status", action="store_true",
+        help="Show last-sync time + per-adapter counters + quarantine "
+             "(G-03 · #289). Does not run a sync.",
+    )
+    sync.add_argument(
+        "--recent", type=int, default=0,
+        help="With --status: also show last N recent log entries.",
+    )
     sync.set_defaults(func=cmd_sync)
 
     # build
@@ -928,6 +1139,29 @@ def build_parser() -> argparse.ArgumentParser:
     quar_retry = quar_sub.add_parser("retry", help="Print retry plan")
     quar_retry.add_argument("--adapter", help="Filter by adapter name")
     quar.set_defaults(func=cmd_quarantine, action=None)
+
+    # log (G-13 · #299)
+    log_p = sub.add_parser(
+        "log",
+        help="Query wiki/log.md structurally (filter by operation / date)",
+    )
+    log_p.add_argument(
+        "--since", type=str, default=None,
+        help="Keep entries on or after YYYY-MM-DD",
+    )
+    log_p.add_argument(
+        "--operation", type=str, default=None,
+        help="Comma-separated operations to keep (sync,synthesize,lint,ingest,query,build)",
+    )
+    log_p.add_argument(
+        "--limit", type=int, default=10,
+        help="Max entries to show (default 10; 0 = unlimited)",
+    )
+    log_p.add_argument(
+        "--format", choices=["text", "json"], default="text",
+        help="Output format (text for humans, json for scripts)",
+    )
+    log_p.set_defaults(func=cmd_log)
 
     # watch
     watch = sub.add_parser("watch", help="Watch agent session stores and auto-sync on change")

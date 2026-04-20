@@ -248,6 +248,53 @@ underlying bug and the next `sync` retries it. G-14 · #300.
 
 ---
 
+## `log` — query `wiki/log.md` structurally
+
+```bash
+python3 -m llmwiki log                                       # last 10 of any op
+python3 -m llmwiki log --since 2026-04-01
+python3 -m llmwiki log --operation sync,synthesize
+python3 -m llmwiki log --limit 50
+python3 -m llmwiki log --format json
+```
+
+### Flags
+
+| Flag | What |
+|---|---|
+| `--since YYYY-MM-DD` | Keep entries on or after this date |
+| `--operation <csv>` | Comma-separated ops to keep: `sync`, `synthesize`, `lint`, `ingest`, `query`, `build` |
+| `--limit N` | Max rows to print (default 10; `0` = unlimited) |
+| `--format {text,json}` | `text` for humans, `json` for scripts |
+
+`wiki/log.md` is the append-only history of every pipeline operation.
+This command parses it into structured events so you can find
+"everything that synced on 2026-04-19" without eyeballing the file.
+Pairs with `llmwiki sync --status` for the live-counters view.
+G-13 · #299.
+
+---
+
+## `sync --status` — observability report
+
+```bash
+python3 -m llmwiki sync --status
+python3 -m llmwiki sync --status --recent 5
+```
+
+Non-destructive reporter. Prints:
+
+1. Last-sync timestamp (from `.llmwiki-state.json` `_meta`).
+2. Per-adapter counters: `discovered / converted / unchanged / live /
+   filtered / errored` (written by the previous `sync` run).
+3. Orphan state entries (keys pointing at files that no longer exist).
+4. Quarantined sources (see `quarantine`).
+5. Optional `--recent N`: last N sync/synthesize entries from `log.md`.
+
+G-03 · #289. Does **not** run a sync — use `llmwiki sync` for that.
+
+---
+
 ## `watch` — long-running session-store watcher
 
 ```bash
