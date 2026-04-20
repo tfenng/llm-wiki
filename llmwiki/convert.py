@@ -133,7 +133,15 @@ def _migrate_legacy_state(
     ]
     known_names = set(adapter_names)
     for k, v in raw.items():
-        if not isinstance(k, str) or not isinstance(v, (int, float)):
+        if not isinstance(k, str):
+            continue
+        # G-03 (#289): preserve observability metadata (``_meta``,
+        # ``_counters``) and any future underscore-prefixed system
+        # keys through migration. These hold dicts, not mtimes.
+        if k.startswith("_"):
+            out[k] = v  # type: ignore[assignment]
+            continue
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
             continue
         if "::" in k:
             # Already portable — keep.
@@ -918,28 +926,49 @@ def convert_all(
 
     converted = unchanged = live = filtered = ignored_count = errors = 0
 
+    # G-03 (#289): per-adapter counters so `llmwiki sync --status` can
+    # report which adapter saw what. Written under ``_counters`` in the
+    # state file so there's no separate persistence surface to maintain.
+    counters: dict[str, dict[str, int]] = {}
+
+    def _bump(adapter_name: str, field: str) -> None:
+        c = counters.setdefault(adapter_name, {
+            "discovered": 0, "converted": 0, "unchanged": 0, "live": 0,
+            "filtered": 0, "ignored": 0, "errored": 0,
+        })
+        c[field] = c.get(field, 0) + 1
+
     for cls in selected:
         adapter = cls(config)
         print(f"==> adapter: {cls.name}")
         sessions = adapter.discover_sessions()
         print(f"  discovered: {len(sessions)} source files")
+        counters.setdefault(cls.name, {
+            "discovered": 0, "converted": 0, "unchanged": 0, "live": 0,
+            "filtered": 0, "ignored": 0, "errored": 0,
+        })
+        counters[cls.name]["discovered"] = len(sessions)
         for path in sessions:
             project_slug = adapter.derive_project_slug(path)
             if project and project not in project_slug:
                 filtered += 1
+                _bump(cls.name, "filtered")
                 continue
             if ignore and ignore.is_ignored(project=project_slug, filename=path.name):
                 ignored_count += 1
+                _bump(cls.name, "ignored")
                 continue
             try:
                 mtime = path.stat().st_mtime
             except OSError as e:
                 errors += 1
+                _bump(cls.name, "errored")
                 _quarantine_add(cls.name, str(path), f"stat failed: {e}")
                 continue
             key = _portable_state_key(cls.name, path)
             if state.get(key) == mtime:
                 unchanged += 1
+                _bump(cls.name, "unchanged")
                 continue
 
             # Markdown-source adapters (e.g. Obsidian) route through a simple
@@ -949,10 +978,12 @@ def convert_all(
                     text = path.read_text(encoding="utf-8")
                 except OSError as e:
                     errors += 1
+                    _bump(cls.name, "errored")
                     _quarantine_add(cls.name, str(path), f"read failed: {e}")
                     continue
                 if len(text) < 50:
                     filtered += 1
+                    _bump(cls.name, "filtered")
                     continue
                 out_name = f"{project_slug}-{path.stem}.md"
                 out_path = out_dir / out_name
@@ -963,6 +994,7 @@ def convert_all(
                     out_path.write_text(redact(text), encoding="utf-8")
                     state[key] = mtime
                 converted += 1
+                _bump(cls.name, "converted")
                 continue
 
             # PDF adapter: extract text → frontmatter'd markdown
@@ -972,10 +1004,12 @@ def convert_all(
                 except Exception as e:
                     print(f"  skip: {path.name}: {e}", file=sys.stderr)
                     errors += 1
+                    _bump(cls.name, "errored")
                     _quarantine_add(cls.name, str(path), f"pdf convert failed: {e}")
                     continue
                 if not md:
                     filtered += 1
+                    _bump(cls.name, "filtered")
                     continue
                 out_path = out_dir / f"{project_slug}-{out_name}"
                 if dry_run:
@@ -985,6 +1019,7 @@ def convert_all(
                     out_path.write_text(md, encoding="utf-8")
                     state[key] = mtime
                 converted += 1
+                _bump(cls.name, "converted")
                 continue
 
             records = parse_jsonl(path)
@@ -996,13 +1031,16 @@ def convert_all(
             records = filter_records(records, drop_types)
             if not records:
                 filtered += 1
+                _bump(cls.name, "filtered")
                 continue
             last_t = latest_record_time(records)
             if last_t and last_t > live_cutoff and not include_current:
                 live += 1
+                _bump(cls.name, "live")
                 continue
             if since_dt and last_t and last_t < since_dt:
                 filtered += 1
+                _bump(cls.name, "filtered")
                 continue
             try:
                 md, slug, started = render_session_markdown(
@@ -1011,6 +1049,7 @@ def convert_all(
             except Exception as e:
                 print(f"  error: {path.name}: {e}", file=sys.stderr)
                 errors += 1
+                _bump(cls.name, "errored")
                 _quarantine_add(cls.name, str(path), f"render failed: {e}")
                 continue
             date_str = started.strftime("%Y-%m-%d")
@@ -1023,8 +1062,19 @@ def convert_all(
                 out_path.write_text(md, encoding="utf-8")
                 state[key] = mtime
             converted += 1
+            _bump(cls.name, "converted")
 
     if not dry_run and not force:
+        # G-03 (#289): stamp _meta.last_sync + _counters onto the state
+        # file so `llmwiki sync --status` has a canonical place to read
+        # observability data. Keys are namespaced with `_` so they can't
+        # collide with portable adapter::path keys (which never start
+        # with `_` because adapter names are lowercase identifiers).
+        state["_meta"] = {
+            "last_sync": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "version": 1,
+        }
+        state["_counters"] = counters
         save_state(state_file, state)
 
     print()
