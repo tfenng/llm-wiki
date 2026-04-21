@@ -205,7 +205,8 @@ Columns: **default** (runs when you don't pass `--adapter`), **configured**
 ## `graph` — build the knowledge graph
 
 ```bash
-python3 -m llmwiki graph                     # both json + html
+python3 -m llmwiki graph                              # builtin wikilink graph
+python3 -m llmwiki graph --engine graphify             # AI-powered graph (requires graphifyy)
 python3 -m llmwiki graph --format json
 python3 -m llmwiki graph --format html
 ```
@@ -215,10 +216,17 @@ python3 -m llmwiki graph --format html
 | Flag | What |
 |---|---|
 | `--format {json,html,both}` | Output format(s). Default: `both`. |
+| `--engine {builtin,graphify}` | Graph engine. `builtin` = stdlib wikilink graph. `graphify` = AI-powered with community detection, confidence-scored edges, god nodes. Requires `pip install graphifyy`. Default: `builtin`. |
 
-Emits `graph/graph.json` (nodes + edges) and/or `graph/graph.html`
+**Builtin engine:** Emits `graph/graph.json` (nodes + edges) and/or `graph/graph.html`
 (vis-network interactive viewer). The interactive version is also
 auto-copied into `site/graph.html` on every `build`.
+
+**Graphify engine:** Runs the [Graphify](https://github.com/safishamsi/graphify) pipeline:
+tree-sitter AST extraction for code, semantic analysis for docs, Leiden community
+detection, god-node analysis. Outputs to `graphify-out/` (graph.json, graph.html,
+GRAPH_REPORT.md) and copies to `graph/` for build compatibility. Install:
+`pip install llmwiki[graph]` or `pip install graphifyy`.
 
 ---
 

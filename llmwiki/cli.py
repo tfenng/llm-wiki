@@ -318,6 +318,15 @@ def cmd_adapters(args: argparse.Namespace) -> int:
 
 def cmd_graph(args: argparse.Namespace) -> int:
     """Build the knowledge graph from wiki/ wikilinks."""
+    engine = getattr(args, "engine", "builtin")
+    if engine == "graphify":
+        from llmwiki.graphify_bridge import is_available, build_graphify_graph
+        if not is_available():
+            print("error: graphifyy not installed. Run: pip install graphifyy", file=sys.stderr)
+            return 2
+        result = build_graphify_graph()
+        return 0 if result.get("graph") is not None else 1
+
     from llmwiki.graph import build_and_report
     write_json = args.format in ("json", "both")
     write_html = args.format in ("html", "both")
@@ -1423,6 +1432,10 @@ def build_parser() -> argparse.ArgumentParser:
     # graph
     graph = sub.add_parser("graph", help="Build the knowledge graph (graph/graph.json + graph.html)")
     graph.add_argument("--format", choices=["json", "html", "both"], default="both")
+    graph.add_argument(
+        "--engine", choices=["builtin", "graphify"], default="builtin",
+        help="Graph engine: 'builtin' (stdlib wikilinks) or 'graphify' (AI-powered, requires graphifyy)",
+    )
     graph.set_defaults(func=cmd_graph)
 
     # quarantine (G-14 · #300)
