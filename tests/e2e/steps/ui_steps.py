@@ -250,9 +250,25 @@ def _press_chord(page: Page, a: str, b: str) -> None:
         pass
 
 
+def _current_path(page: Page) -> str:
+    """Read ``window.location.pathname`` via Playwright's stable
+    ``page.url`` property instead of ``page.evaluate()``.
+
+    ``page.evaluate()`` tears down its execution context when a
+    navigation is mid-flight (the g-prefix chords navigate
+    synchronously from a keypress handler), so the evaluate race
+    against teardown — and flakes roughly 1-in-20 in CI.  ``page.url``
+    is populated by the frame-navigated event without running JS and
+    is safe post-navigation.  parse ``urlparse().path`` so callers get
+    the pathname just like the old code.
+    """
+    from urllib.parse import urlparse
+    return urlparse(page.url).path
+
+
 @then(parsers.parse('the URL path ends with "{a}" or "{b}"'))
 def _url_ends_with_either(page: Page, a: str, b: str) -> None:
-    path = page.evaluate("() => window.location.pathname")
+    path = _current_path(page)
     assert path.endswith(a) or path.endswith(b), (
         f'URL path "{path}" does not end with "{a}" or "{b}"'
     )
@@ -260,7 +276,7 @@ def _url_ends_with_either(page: Page, a: str, b: str) -> None:
 
 @then(parsers.parse('the URL path contains "{fragment}"'))
 def _url_contains(page: Page, fragment: str) -> None:
-    path = page.evaluate("() => window.location.pathname")
+    path = _current_path(page)
     assert fragment in path, f'URL path "{path}" does not contain "{fragment}"'
 
 
