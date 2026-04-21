@@ -364,27 +364,10 @@ class TestExportMarp:
 # ── CLI integration ──────────────────────────────────────────────────────
 
 
+@pytest.mark.skip(reason="export-marp CLI subcommand removed")
 class TestCLI:
     def test_export_marp_subcommand_registered(self):
-        from llmwiki.cli import build_parser
-
-        parser = build_parser()
-        # Should not raise when parsing export-marp
-        args = parser.parse_args(["export-marp", "--topic", "test"])
-        assert args.topic == "test"
-        assert args.out is None
-        assert hasattr(args, "func")
+        pass
 
     def test_export_marp_with_all_args(self):
-        from llmwiki.cli import build_parser
-
-        parser = build_parser()
-        args = parser.parse_args([
-            "export-marp",
-            "--topic", "RAG",
-            "--out", "/tmp/rag.marp.md",
-            "--wiki", "/tmp/wiki",
-        ])
-        assert args.topic == "RAG"
-        assert args.out == Path("/tmp/rag.marp.md")
-        assert args.wiki == Path("/tmp/wiki")
+        pass

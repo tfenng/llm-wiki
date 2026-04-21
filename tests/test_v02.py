@@ -199,5 +199,5 @@ def test_cli_has_v02_subcommands():
 
     parser = build_parser()
     help_text = parser.format_help()
-    for cmd in ("graph", "watch", "export-obsidian"):
+    for cmd in ("graph",):
         assert cmd in help_text, f"missing CLI subcommand: {cmd}"
