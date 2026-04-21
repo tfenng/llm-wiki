@@ -89,7 +89,7 @@ Releases = "https://github.com/Pratiyush/llm-wiki/releases"
 llmwiki = "llmwiki.cli:main"
 
 [tool.setuptools]
-packages = ["llmwiki", "llmwiki.adapters", "llmwiki.mcp"]
+packages = ["llmwiki", "llmwiki.adapters", "llmwiki.adapters.contrib", "llmwiki.mcp"]
 
 [tool.setuptools.package-data]
 llmwiki = ["py.typed"]
