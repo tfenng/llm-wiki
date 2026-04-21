@@ -230,6 +230,7 @@ def _press_chord(page: Page, a: str, b: str) -> None:
     # Same focus trick as _press_key — the g-prefix handler lives on
     # `document`, so we need an activeElement for keydown to bubble.
     _focus_body(page)
+    starting_url = page.url
     page.keyboard.press(a)
     # The second key in a g-prefix chord (`g h`, `g p`, `g s`)
     # assigns `window.location.href` synchronously, which tears down
@@ -242,12 +243,29 @@ def _press_chord(page: Page, a: str, b: str) -> None:
     except Exception as e:
         if "Execution context was destroyed" not in str(e):
             raise
-    # If the chord triggered navigation, wait for the new document so
-    # subsequent URL assertions read the final pathname.
+    # Wait for the new document so subsequent URL assertions read the
+    # final pathname.  domcontentloaded ≠ url-has-actually-changed, so
+    # when the chord navigated away from the starting URL we also poll
+    # page.url until it flips (fixes a real race seen on CI — #339
+    # follow-up: `_url_contains` used to read page.url while the
+    # navigation hadn't fully registered, returning the pre-nav URL).
     try:
         page.wait_for_load_state("domcontentloaded", timeout=3000)
     except Exception:
         pass
+    # For the ? / / chords we don't actually navigate — only wait when
+    # the second key is one of {h, p, s}.
+    if b.lower() in ("h", "p", "s"):
+        try:
+            page.wait_for_function(
+                "startingUrl => window.location.href !== startingUrl",
+                arg=starting_url,
+                timeout=3000,
+            )
+        except Exception:
+            # Timeout is fine — the URL assertion will give a precise
+            # error if the navigation genuinely didn't fire.
+            pass
 
 
 def _current_path(page: Page) -> str:
