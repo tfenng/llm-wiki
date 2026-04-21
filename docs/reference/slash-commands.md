@@ -11,12 +11,47 @@ what it does, what it runs under the hood, and a realistic invocation
 example. Use these inside **Claude Code** — Codex CLI picks the same
 files up via `install-skills`.
 
-Summary of **16 commands in 4 groups**:
+Summary of **17 commands in 4 groups**:
 
 | Group | Commands |
 |---|---|
-| **Wiki pipeline** (10) | `/wiki-init` `/wiki-sync` `/wiki-ingest` `/wiki-query` `/wiki-update` `/wiki-lint` `/wiki-candidates` `/wiki-graph` `/wiki-reflect` `/wiki-build` `/wiki-serve` `/wiki-export-marp` |
+| **Wiki pipeline** (13) | `/wiki-init` `/wiki-sync` `/wiki-ingest` `/wiki-query` `/wiki-update` `/wiki-lint` `/wiki-candidates` `/wiki-synthesize` `/wiki-graph` `/wiki-reflect` `/wiki-build` `/wiki-serve` `/wiki-export-marp` |
 | **Governance / maintainer** (4) | `/maintainer` `/release` `/review-pr` `/triage-issue` |
+
+---
+
+## Decision tree: which tool runs when?
+
+### CLI vs slash
+
+| You want to… | Use |
+|---|---|
+| …run a check in CI, a cron job, or a shell script | **CLI** (`python3 -m llmwiki …`) |
+| …chain commands with `&&` / pipe to `jq` | **CLI** |
+| …have the model read output + take follow-up actions | **slash** (inside Claude Code / Codex) |
+| …answer a free-form question ("what did I decide about X?") | **slash** (`/wiki-query`) |
+| …do one-shot builds, serves, graph generation | either — slashes wrap the CLI |
+
+**Rule of thumb:** if the output is for *you* to read + act on manually,
+use the CLI. If the output should feed back into an LLM turn, use the
+slash — the model sees the full stdout and can chain into the next step.
+
+### Eval vs lint
+
+Two different QA surfaces that are easy to confuse:
+
+| Command | Checks | Severity model | When to run |
+|---|---|---|---|
+| [`llmwiki lint`](../reference/cli.md#lint--run-13-wiki-quality-rules) / `/wiki-lint` | **Wiki content quality** — frontmatter completeness, `[[wikilink]]` integrity, orphans, duplicate titles, stale pages, cache-tier consistency, tag-topic convention, stale references | 15 rules with `error` / `warning` / `info` severities; `--fail-on-errors` exits non-zero only on errors | After every `/wiki-sync` or `/wiki-build` |
+| [`llmwiki eval`](../reference/cli.md#eval--structural-eval-checks-over-wiki) | **Structural corpus health** — site-wide metrics (total pages, orphan ratio, avg outbound links, broken-link rate, duplicate-slug rate, content-length distribution) | Pass / fail against configurable thresholds | In CI, weekly, or when comparing two wiki snapshots |
+
+In plain English: **lint** checks each page against its contract;
+**eval** checks the whole wiki against health thresholds.  A page
+passing lint doesn't mean the corpus passes eval, and vice versa.
+
+Reach for `lint` first when something looks wrong with a specific
+page.  Reach for `eval` when you want to compare two builds (is the
+wiki trending healthier? getting more orphans?).
 
 ---
 
@@ -179,6 +214,34 @@ structural + 3 LLM-powered + `stale_candidates` (#51) +
 /wiki-lint
 /wiki-lint include LLM-powered rules
 /wiki-lint just the link_integrity rule
+```
+
+---
+
+### `/wiki-synthesize`
+
+**What:** call the configured LLM backend on every new `raw/sessions/*.md`
+to produce `wiki/sources/<slug>.md`.
+
+**Wraps:** `python3 -m llmwiki synthesize` (respects the
+`synthesis.backend` key in `sessions_config.json` — `dummy` / `ollama`
+and, in-progress on #315, `claude-api`).
+
+**Natural-language flags Claude translates:**
+
+| You say | Runs |
+|---|---|
+| "just show me what it would cost" | `synthesize --estimate` |
+| "preview without writing" | `synthesize --dry-run` |
+| "check the backend is reachable" | `synthesize --check` |
+| "re-synthesize everything" | `synthesize --force` |
+
+**Example:**
+
+```
+/wiki-synthesize
+/wiki-synthesize with a cost estimate
+/wiki-synthesize force a re-run of every source
 ```
 
 ---
