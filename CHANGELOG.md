@@ -8,6 +8,12 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 ## [Unreleased]
 
+### Fixed
+
+- **raw/sessions filename collisions quarantined 9 sources per real-corpus sync** (#339) — two distinct jsonls produced the same `YYYY-MM-DDTHH-MM-project-slug.md` filename when: (1) subagent jsonls (`~/.claude/projects/<proj>/<uuid>/subagents/agent-*.jsonl`) inherit the parent session's start-time + slug → identical canonical name as the parent, (2) two top-level sessions start in the same minute inside the same project. The raw-immutability guardrail (#326) correctly refused to overwrite, but the result was that sub-conversations + same-minute siblings got silently quarantined instead of stored. Fix: `convert_all` now detects canonical-name collision (file exists AND the state key's mtime doesn't match this source) and retries with a stable 8-char hash of the source path appended (`<ts>-<proj>-<slug>--<hash8>.md`). Parent session keeps its canonical filename; siblings land side by side. New `flat_output_name(..., disambiguator=...)` kwarg + `_source_hash8()` helper. Re-sync of the same source is still idempotent (state-key mtime match short-circuits the retry). 5 new parametrized tests in `tests/test_flat_naming.py` + 3 integration tests in `tests/test_collision_retry.py` (subagent collision, two top-level sources with pinned slug, re-sync idempotency).
+
+- **E2E keyboard-nav test flaked on `g s → sessions`** — the step `the URL path contains "sessions/index.html"` used `page.evaluate("() => window.location.pathname")` which races the in-flight navigation from the `g`-prefix chord: evaluate's execution context tears down while post-processing the keypress, producing `Error: Page.evaluate: Execution context was destroyed, most likely because of a navigation` ~5% of the time in CI. Fix: new `_current_path(page)` helper reads `page.url` (synchronous property, populated by the frame-navigated event without running JS) and parses the path out of it. No more evaluate race.
+
 ## [1.1.0-rc4] — 2026-04-20
 
 Navigation + quality release. Fixed two high-impact usability bugs the

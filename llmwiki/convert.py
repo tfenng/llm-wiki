@@ -770,14 +770,30 @@ def flat_output_name(
     started: datetime,
     project_slug: str,
     slug: str,
+    *,
+    disambiguator: str = "",
 ) -> str:
     """Build a flat filename: ``YYYY-MM-DDTHH-MM-project-slug.md``.
 
     The date+time+project+slug format ensures chronological sort,
     project traceability, and uniqueness without nested directories.
+
+    ``disambiguator`` (#339): when two distinct source jsonls would
+    produce the same filename (subagents that inherit the parent's
+    start-time + slug, or top-level sessions that happen to start in
+    the same minute), the caller passes a short stable hash of the
+    source path here and we append ``--<hash>`` before ``.md``.
     """
     ts = started.strftime("%Y-%m-%dT%H-%M")
-    return f"{ts}-{project_slug}-{slug}.md"
+    suffix = f"--{disambiguator}" if disambiguator else ""
+    return f"{ts}-{project_slug}-{slug}{suffix}.md"
+
+
+def _source_hash8(source_path: Path) -> str:
+    """Stable 8-char SHA-256 of a source path — used as a filename
+    disambiguator when two jsonls would otherwise collide (#339)."""
+    import hashlib as _hl
+    return _hl.sha256(str(source_path).encode("utf-8")).hexdigest()[:8]
 
 
 def render_session_markdown(
@@ -1111,6 +1127,23 @@ def convert_all(
             date_str = started.strftime("%Y-%m-%d")
             out_name = flat_output_name(started, project_slug, slug)
             out_path = out_dir / out_name
+            # #339: if the canonical name already exists on disk AND
+            # the state file doesn't record US as the writer (different
+            # source jsonl), this is a real collision — retry with the
+            # jsonl's path-hash appended so both sources land side by
+            # side.  Parent session stays at the canonical filename;
+            # subagents + same-minute siblings carry a --<hash8> suffix.
+            if (
+                not dry_run
+                and not force
+                and out_path.exists()
+                and state.get(key) != mtime
+            ):
+                out_name = flat_output_name(
+                    started, project_slug, slug,
+                    disambiguator=_source_hash8(path),
+                )
+                out_path = out_dir / out_name
             if dry_run:
                 print(f"  [dry-run] {out_path.relative_to(REPO_ROOT)} ({len(md)} bytes)")
             else:
