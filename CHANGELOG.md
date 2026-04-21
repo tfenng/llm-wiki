@@ -8,6 +8,10 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 ## [Unreleased]
 
+## [1.1.0-rc6] — 2026-04-21
+
+rc6 batch.  Closes 4 open issues: #346 (adapter tag fix), #282 (tutorial UX), #277 (palette indexes), #283 (md cache).
+
 ### Fixed
 
 - **Frontmatter `tags:` was hardcoded to `claude-code` for every adapter** (#346, reported by @fengguanghuai) — `render_session_markdown` emitted `tags: [claude-code, session-transcript]` regardless of which adapter (`claude_code`, `codex_cli`, `cursor`, `copilot-chat`, `gemini_cli`, `opencode`, `chatgpt`) produced the session.  Result: every session grouped under the Claude chip on the compiled site even when the user was on Codex or Cursor.  Fix: new `_adapter_tag()` helper normalises the registry name (`claude_code` → `claude-code`, `codex_cli` → `codex-cli`, `copilot-chat` → `copilot-chat`), and `render_session_markdown` now takes an `adapter_name` kwarg propagated from `convert_all`.  Back-compat default of `claude-code` for callers that don't pass the kwarg so no silent regression on existing tests.  22 new parametrized tests in `tests/test_adapter_tag.py`.
