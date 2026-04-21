@@ -12,6 +12,22 @@ searchable, interlinked, and offline. No database, no account, no cloud.
 
 ---
 
+## Pick your mode
+
+llmwiki runs two interchangeable ways. Pick one, start — you can switch later.
+
+| | [**API mode**](modes/api/) | [**Agent mode**](modes/agent/) |
+|---|---|---|
+| Who calls the LLM | Python + Anthropic API | Your running Claude Code / Codex CLI |
+| API key | Yes (`ANTHROPIC_API_KEY`) | No |
+| Cost | Per token (with cache) | Included in your agent subscription |
+| Concurrency | Batch + parallel | Serial |
+| Best for | Large corpora, cron, CI | Interactive, exploratory |
+
+→ **[Read the full comparison](modes/)** before picking.
+
+---
+
 ## Getting started — 5 minutes
 
 | # | Tutorial | Time |
@@ -27,7 +43,7 @@ searchable, interlinked, and offline. No database, no account, no cloud.
 
 - **[Claude Code](tutorials/03-use-with-claude-code.md)** — slash commands, session metadata, `/wiki-ingest`, `/wiki-sync`, `/wiki-query`.
 - **[Codex CLI](tutorials/04-use-with-codex-cli.md)** — sync from `~/.codex/sessions/`, live-session filtering.
-- *Adapter reference:* [Claude Code](adapters/claude-code.md) · [Codex CLI](adapters/codex-cli.md) · [Cursor](adapters/cursor.md) · [Gemini CLI](adapters/gemini-cli.md) · [Copilot](adapters/copilot.md) · [Obsidian](adapters/obsidian.md) · [PDF](adapters/pdf.md).
+- *Adapter reference:* [Claude Code](adapters/claude-code.md) · [Codex CLI](adapters/codex-cli.md) · [Cursor](adapters/cursor.md) · [Gemini CLI](adapters/gemini-cli.md) · [Copilot](adapters/copilot.md) · [Obsidian](adapters/obsidian.md) · [OpenCode / OpenClaw](adapters/opencode.md) · [ChatGPT](adapters/chatgpt.md) · [Jira](adapters/jira.md) · [Meeting transcripts](adapters/meeting.md) · [PDF](adapters/pdf.md).
 
 ---
 
@@ -70,6 +86,7 @@ searchable, interlinked, and offline. No database, no account, no cloud.
 
 ## Operate
 
+- **[Command cheatsheet](cheatsheet.md)** — every slash + CLI command on one page.
 - **[Upgrade guide](UPGRADING.md)** — what changes between releases, migrations, opt-ins.
 - **[FAQ](faq.md)** · **[Troubleshooting](troubleshooting.md)** · **[Privacy](privacy.md)**.
 - **[Testing — visual regression](testing/visual-regression.md)**.

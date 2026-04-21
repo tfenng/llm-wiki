@@ -282,6 +282,39 @@ cp examples/sessions_config.json config.json
 | `truncation` | `assistant_text_chars` | int | 8000 | Max chars of assistant text |
 | root | `drop_thinking_blocks` | bool | true | Drop `<thinking>` blocks from output |
 | `adapters` | per-adapter | object | varies | Override adapter-specific settings |
+| `schedule` | `build` | enum | `"on-sync"` | When `/wiki-build` runs. `on-sync` / `daily` / `weekly` / `manual` / `never`. |
+| `schedule` | `lint` | enum | `"manual"` | When `/wiki-lint` runs. Same enum. |
+| `synthesis` | `backend` | enum | `"dummy"` | Which synthesizer: `"dummy"` / `"ollama"`. The Claude API backend ships with #315. |
+| `synthesis.ollama` | `model` | string | `"llama3.1:8b"` | Ollama model name (pull via `ollama pull`) |
+| `synthesis.ollama` | `base_url` | string | `"http://127.0.0.1:11434"` | Ollama HTTP endpoint |
+| `synthesis.ollama` | `timeout` | int (s) | 60 | Per-request timeout |
+| `synthesis.ollama` | `max_retries` | int | 3 | Exponential-backoff retry count on 5xx / timeout |
+| `pdf` | `enabled` | bool | false | Opt-in; non-AI adapter (#326) |
+| `pdf` | `source_dirs` | list | `["~/Documents/PDFs"]` | Directories to scan |
+| `pdf` | `min_pages` | int | 1 | Skip PDFs with fewer pages |
+| `pdf` | `max_pages` | int | 500 | Skip PDFs with more pages (cost guard) |
+| `meeting` | `enabled` | bool | false | Opt-in; non-AI adapter |
+| `meeting` | `source_dirs` | list | `["~/Meetings"]` | Directories to scan |
+| `meeting` | `extensions` | list | `[".vtt", ".srt"]` | File extensions to consider |
+| `jira` | `enabled` | bool | false | Opt-in; non-AI adapter |
+| `jira` | `server` | string | — | Jira Cloud/Server URL |
+| `jira` | `email` | string | — | Account email |
+| `jira` | `api_token` | string | `""` | Prefer `api_token_env` + `.env` |
+| `jira` | `jql` | string | sensible default | Query for tickets to sync |
+| `jira` | `max_results` | int | 50 | Pagination cap |
+| `chatgpt` | `enabled` | bool | false | Opt-in; requires explicit `conversations_json` |
+| `chatgpt` | `conversations_json` | string | — | Path to export file |
+| `web_clipper` | `enabled` | bool | false | Obsidian Web Clipper intake path |
+| `web_clipper` | `watch_dir` | string | `"raw/web"` | Directory to watch |
+| `web_clipper` | `extensions` | list | `[".md"]` | File extensions to pick up |
+| `web_clipper` | `auto_queue` | bool | true | Auto-add to `.llmwiki-queue.json` |
+| `scheduled_sync` | `enabled` | bool | false | Generate OS-native scheduled task via `llmwiki schedule` |
+| `scheduled_sync` | `cadence` | enum | `"daily"` | `daily` / `weekly` / `hourly` |
+| `scheduled_sync` | `hour` | int | 3 | 0–23 (used by daily+weekly) |
+| `scheduled_sync` | `minute` | int | 0 | 0–59 |
+| `scheduled_sync` | `weekday` | int | 1 | 0=Sunday … 6=Saturday (used by weekly) |
+| `scheduled_sync` | `working_dir` | string | repo root | Directory for the scheduled run |
+| `scheduled_sync` | `llmwiki_bin` | string | auto | `llmwiki` executable path (resolved from `which`) |
 
 ## Environment variables
 
@@ -313,15 +346,22 @@ ai-newsletter/2026-04-04-*secret*
 
 Each adapter can be configured in the `adapters` section of `config.json`. The key must match the adapter's registry name.
 
-| Adapter | Config key | Configurable fields |
-|---|---|---|
-| Claude Code | `claude_code` | `roots` |
-| Codex CLI | `codex_cli` | `roots` |
-| Copilot Chat | `copilot-chat` | `roots` |
-| Copilot CLI | `copilot-cli` | `roots` |
-| Cursor | `cursor` | `roots` |
-| Gemini CLI | `gemini_cli` | `roots` |
-| Obsidian | `obsidian` | `vault_paths`, `exclude_folders`, `min_content_chars` |
+| Adapter | Config key | AI session? | Configurable fields |
+|---|---|---|---|
+| Claude Code | `claude_code` | yes (default on) | `roots` |
+| Codex CLI | `codex_cli` | yes (default on) | `roots` |
+| Copilot Chat | `copilot-chat` | yes (default on) | `roots` |
+| Copilot CLI | `copilot-cli` | yes (default on) | `roots` |
+| Cursor | `cursor` | yes (default on) | `roots` |
+| Gemini CLI | `gemini_cli` | yes (default on) | `roots` |
+| OpenCode / OpenClaw | `opencode` | yes (default on) | `roots` |
+| ChatGPT | `chatgpt` | yes (opt-in) | `enabled`, `conversations_json` |
+| Obsidian | `obsidian` | **no** (opt-in) | `vault_paths`, `exclude_folders`, `min_content_chars` |
+| Jira | `jira` | **no** (opt-in) | `server`, `email`, `api_token` / `api_token_env`, `jql`, `max_results` |
+| Meeting transcripts | `meeting` | **no** (opt-in) | `source_dirs`, `extensions` |
+| PDF | `pdf` | **no** (opt-in) | `source_dirs`, `min_pages`, `max_pages` |
+
+Non-AI-session adapters are opt-in only (#326) — set `{name}.enabled: true` in this config to have them fire on `sync`.
 
 Example:
 

@@ -305,6 +305,35 @@ def _help_dialog_visible(page: Page) -> None:
     expect(dialog).to_be_visible(timeout=3000)
 
 
+# #278: additional keyboard-shortcut coverage.
+
+
+@then("the command palette becomes hidden")
+def _palette_hidden(page: Page) -> None:
+    page.wait_for_function(
+        "() => document.getElementById('palette')?.getAttribute('aria-hidden') === 'true'",
+        timeout=3000,
+    )
+
+
+@then("the help dialog becomes hidden")
+def _help_dialog_hidden(page: Page) -> None:
+    # The help dialog may unmount OR gain a hidden attribute — accept either.
+    page.wait_for_function(
+        """() => {
+            const d = document.querySelector('.help-dialog');
+            if (!d) return true;
+            return d.offsetParent === null || d.getAttribute('aria-hidden') === 'true';
+        }""",
+        timeout=3000,
+    )
+
+
+@when(parsers.parse("I wait {ms:d} milliseconds"))
+def _wait_ms(page: Page, ms: int) -> None:
+    page.wait_for_timeout(ms)
+
+
 # ─── mobile bottom nav ─────────────────────────────────────────────────
 
 
