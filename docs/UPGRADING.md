@@ -15,6 +15,40 @@ The canonical per-release detail is
 [CHANGELOG.md](https://github.com/Pratiyush/llm-wiki/blob/master/CHANGELOG.md)
 — this guide focuses on "what might break".
 
+## v1.1.0-rc5
+
+**Released: 2026-04-21.**
+
+### New behaviour
+
+- **Session transcripts strip project-local file refs.** Anchors
+  pointing at `tasks.md`, `user_profile.md`, `settings.gradle.kts`,
+  `.kiro/…`, `/Users/…`, etc. are unwrapped into inline
+  `<span class="session-ref dead-link">` — the filename stays visible
+  but the anchor doesn't 404. No action required.
+
+- **`README.md` and `CONTRIBUTING.md` now compile as site pages.**
+  `site/README.html` and `site/CONTRIBUTING.html` ship alongside
+  `changelog.html`. Link rewriter routes to the compiled page instead
+  of GitHub for these two files.
+
+- **`/wiki-synthesize` slash command** — wraps `llmwiki synthesize`
+  with natural-language flags ("estimate cost", "dry run", "force").
+  Install via `llmwiki install-skills` or copy manually from
+  `.claude/commands/wiki-synthesize.md`.
+
+- **Dual-mode docs landing pages.** `docs/modes/api/` and
+  `docs/modes/agent/` exist as skeletons; the actual API / Agent
+  backends ship with #315 / #316.
+
+### Schema migrations
+
+None. Fully backwards-compatible with rc4 state files.
+
+### Breaking
+
+None.
+
 ## v1.1.0-rc4
 
 **Released: 2026-04-20.**

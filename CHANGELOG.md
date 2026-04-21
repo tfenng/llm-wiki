@@ -8,6 +8,14 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 ## [Unreleased]
 
+## [1.1.0-rc5] — 2026-04-21
+
+Site audit + 5 closed batches.  Closes 12 open issues in one pass:
+session-local ref stripping, cheatsheet, README+CONTRIBUTING compile,
+expanded Playwright E2E, slash-CLI parity test, 4 adapter docs, Ollama
+tutorial, dual-mode docs skeleton, `/wiki-synthesize` slash, and the
+shared frontmatter parser.
+
 ### Added
 
 - **Dual-mode docs skeleton** (#317) — new `docs/modes/` tree with a top-level comparison + two coloured-banner landing pages: `docs/modes/api/` (purple banner, "API MODE — uses your Anthropic API key") and `docs/modes/agent/` (teal banner, "AGENT MODE — uses your existing Claude Code / Codex CLI session"). The docs hub now leads with a "Pick your mode" comparison table before the tutorials. Prepares the info architecture for the actual backends that ship with #315 (API) and #316 (Agent).
