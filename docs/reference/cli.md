@@ -66,14 +66,12 @@ into `raw/sessions/`, then (by default) auto-builds and auto-lints.
 
 ```bash
 python3 -m llmwiki sync
-python3 -m llmwiki sync --dry-run
 python3 -m llmwiki sync --since 2026-04-01 --project llm-wiki
 python3 -m llmwiki sync --adapter claude_code codex_cli
 python3 -m llmwiki sync --no-auto-build --no-auto-lint
 python3 -m llmwiki sync --vault "~/Documents/Obsidian Vault"
 python3 -m llmwiki sync --vault ~/my-vault --allow-overwrite
 python3 -m llmwiki sync --force
-python3 -m llmwiki sync --download-images
 ```
 
 ### Flags
@@ -85,8 +83,6 @@ python3 -m llmwiki sync --download-images
 | `--project SUBSTRING` | Filter by project-slug substring. |
 | `--include-current` | Include sessions < 60 min old (default skips live ones). |
 | `--force` | Ignore the mtime state file, reconvert everything. |
-| `--dry-run` | Print what would be written, touch nothing. |
-| `--download-images` | Mirror remote image URLs into `raw/assets/`. |
 | `--auto-build` / `--no-auto-build` | Rebuild `site/` after sync (default: on). |
 | `--auto-lint` / `--no-auto-lint` | Run `lint` after sync (default: on). |
 | `--vault PATH` | Vault-overlay mode — write new pages inside the given Obsidian / Logseq vault instead of `wiki/`. See [`guides/existing-vault.md`](../guides/existing-vault.md). |
@@ -106,7 +102,6 @@ python3 -m llmwiki sync --download-images
 
 - Nightly cron-style sync of one project only:
   `llmwiki sync --project my-project --no-auto-lint --since $(date -v-1d +%Y-%m-%d)`
-- Staging sweep before a release: `llmwiki sync --force --dry-run`
 - Vault-overlay round-trip: `llmwiki sync --vault "~/Documents/Obsidian Vault"`
 
 ---
@@ -266,7 +261,7 @@ python3 -m llmwiki export all --out ~/custom-site
 
 ---
 
-## `lint` — run 13 wiki-quality rules
+## `lint` — run 14 wiki-quality rules
 
 ```bash
 python3 -m llmwiki lint
@@ -345,7 +340,6 @@ round-trip semantics when a candidate lives inside a vault.
 ```bash
 python3 -m llmwiki synthesize --check            # probe the backend
 python3 -m llmwiki synthesize --estimate         # cost preview, no API calls
-python3 -m llmwiki synthesize --dry-run          # list what would be synth'd
 python3 -m llmwiki synthesize --force            # re-synth everything
 python3 -m llmwiki synthesize                    # real run
 ```
@@ -355,7 +349,6 @@ python3 -m llmwiki synthesize                    # real run
 | Flag | What |
 |---|---|
 | `--check` | Probe backend availability + exit (0 if reachable). |
-| `--dry-run` | List sessions that would be synthesized, write nothing. |
 | `--force` | Ignore state, re-synth every source. |
 | `--estimate` | Print cached-vs-fresh token + dollar estimate (#50). |
 
@@ -396,6 +389,25 @@ python3 -m llmwiki --version
 ```
 
 Both print `llmwiki <version>`.
+
+---
+
+## `query` — search the knowledge graph
+
+```bash
+python3 -m llmwiki query "what projects is Pratiyush working on"
+python3 -m llmwiki query "Flutter mobile" --depth 2 --budget 1000
+```
+
+### Flags
+
+| Flag | What |
+|---|---|
+| `--depth N` | BFS traversal depth. Default: `3`. |
+| `--budget N` | Max output tokens. Default: `2000`. |
+
+Requires Graphify (`pip install llmwiki[graph]`). Run `llmwiki graph` first
+to build the graph.
 
 ---
 

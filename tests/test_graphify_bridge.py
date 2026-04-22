@@ -43,13 +43,11 @@ def test_bridge_module_imports():
     from llmwiki.graphify_bridge import (
         is_available,
         build_graphify_graph,
-        export_obsidian,
-        export_wiki,
+        export_to_obsidian,
         query_graph,
     )
     assert callable(build_graphify_graph)
-    assert callable(export_obsidian)
-    assert callable(export_wiki)
+    assert callable(export_to_obsidian)
     assert callable(query_graph)
 
 
@@ -65,12 +63,12 @@ def test_cli_graph_has_engine_flag():
     assert args.engine == "graphify"
 
 
-def test_cli_graph_engine_default_is_builtin():
+def test_cli_graph_engine_default_is_graphify():
     from llmwiki.cli import build_parser
 
     parser = build_parser()
     args = parser.parse_args(["graph"])
-    assert args.engine == "builtin"
+    assert args.engine == "graphify"
 
 
 def test_cli_graph_engine_graphify_accepted():
@@ -111,3 +109,75 @@ def test_query_graph_no_graph_file(tmp_path):
     with patch("llmwiki.graphify_bridge.GRAPHIFY_OUT", tmp_path):
         result = query_graph("test question")
     assert "No graph found" in result
+
+
+# ─── project-based edge enrichment ──────────────────────────────────
+
+
+def test_extract_wiki_nodes_project_edges(tmp_path):
+    """Pages sharing a project: field get connected via project hub + proximity edges."""
+    from llmwiki.graphify_bridge import _extract_wiki_nodes
+
+    # Create three wiki pages in the same project
+    for i, (slug, date) in enumerate([
+        ("alpha", "2026-04-01"),
+        ("beta", "2026-04-02"),
+        ("gamma", "2026-04-03"),
+    ]):
+        (tmp_path / f"{slug}.md").write_text(
+            f"---\ntitle: \"{slug}\"\ntype: source\nproject: test-proj\ndate: {date}\n---\n\n# {slug}\n",
+            encoding="utf-8",
+        )
+
+    result = _extract_wiki_nodes(tmp_path)
+    nodes = result["nodes"]
+    edges = result["edges"]
+
+    # Expect a project hub node
+    hub_nodes = [n for n in nodes if n["type"] == "project"]
+    assert len(hub_nodes) == 1
+    assert hub_nodes[0]["id"] == "project__test-proj"
+    assert hub_nodes[0]["label"] == "Project: test-proj"
+
+    # Expect 3 membership edges (one per page)
+    membership = [e for e in edges if e["type"] == "project_membership"]
+    assert len(membership) == 3
+
+    # Expect proximity edges: alpha->beta, alpha->gamma, beta->gamma = 3
+    proximity = [e for e in edges if e["type"] == "project_proximity"]
+    assert len(proximity) == 3
+
+
+def test_extract_wiki_nodes_no_project_no_extra_edges(tmp_path):
+    """Pages without project: field produce no project edges."""
+    from llmwiki.graphify_bridge import _extract_wiki_nodes
+
+    (tmp_path / "solo.md").write_text(
+        "---\ntitle: \"solo\"\ntype: entity\n---\n\n# Solo page\n",
+        encoding="utf-8",
+    )
+
+    result = _extract_wiki_nodes(tmp_path)
+    edges = result["edges"]
+
+    project_edges = [e for e in edges if e["type"] in ("project_membership", "project_proximity")]
+    assert len(project_edges) == 0
+
+
+def test_extract_wiki_nodes_project_proximity_capped_at_5(tmp_path):
+    """Proximity edges connect at most 5 neighbours (not N^2)."""
+    from llmwiki.graphify_bridge import _extract_wiki_nodes
+
+    # Create 10 pages in the same project
+    for i in range(10):
+        (tmp_path / f"page{i:02d}.md").write_text(
+            f"---\ntitle: \"page{i}\"\ntype: source\nproject: big\ndate: 2026-04-{i+1:02d}\n---\n\n",
+            encoding="utf-8",
+        )
+
+    result = _extract_wiki_nodes(tmp_path)
+    proximity = [e for e in result["edges"] if e["type"] == "project_proximity"]
+
+    # With 10 pages and max 5 forward neighbours each, the number should be
+    # 5+5+5+5+5+4+3+2+1+0 = 35 (not 10*9/2 = 45)
+    assert len(proximity) == 35

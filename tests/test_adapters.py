@@ -10,7 +10,7 @@ from llmwiki.adapters.contrib.copilot_chat import CopilotChatAdapter
 from llmwiki.adapters.contrib.copilot_cli import CopilotCliAdapter
 from llmwiki.adapters.contrib.cursor import CursorAdapter
 from llmwiki.adapters.contrib.gemini_cli import GeminiCliAdapter
-from llmwiki.adapters.obsidian import ObsidianAdapter
+from llmwiki.adapters.contrib.obsidian import ObsidianAdapter
 
 
 def test_registry_discovers_all_adapters():

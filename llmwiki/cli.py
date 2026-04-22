@@ -106,31 +106,11 @@ def cmd_sync(args: argparse.Namespace) -> int:
         project=args.project,
         include_current=args.include_current,
         force=args.force,
-        dry_run=args.dry_run,
     )
-    # v0.7 (#96): optionally download remote images after conversion.
-    if args.download_images:
-        from llmwiki.image_pipeline import process_markdown_images
-        from llmwiki import REPO_ROOT
-        raw_sessions = REPO_ROOT / "raw" / "sessions"
-        assets_dir = REPO_ROOT / "raw" / "assets"
-        total_dl = total_fail = total_skip = 0
-        if raw_sessions.exists():
-            for md_file in sorted(raw_sessions.rglob("*.md")):
-                dl, fail, skip = process_markdown_images(
-                    md_file, assets_dir, dry_run=args.dry_run,
-                )
-                total_dl += dl
-                total_fail += fail
-                total_skip += skip
-        print(
-            f"  images: {total_dl} downloaded, {total_fail} failed, "
-            f"{total_skip} skipped (cached)"
-        )
 
     # v1.0 (#157): auto-build and auto-lint after sync.
     # --no-build and --no-lint let users opt out.
-    if rc == 0 and not args.dry_run:
+    if rc == 0:
         schedule = _load_schedule_config()
         if args.auto_build and _should_run_after_sync(schedule.get("build", "on-sync")):
             print("  auto-build: regenerating site/...")
@@ -317,16 +297,30 @@ def cmd_adapters(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_query(args: argparse.Namespace) -> int:
+    """Query the knowledge graph with a natural language question."""
+    from llmwiki.graphify_bridge import is_available, query_graph
+    if not is_available():
+        print("error: graphifyy not installed. Run: pip install llmwiki[graph]", file=sys.stderr)
+        return 2
+    question = " ".join(args.question)
+    result = query_graph(question, depth=args.depth, token_budget=args.budget)
+    print(result)
+    return 0
+
+
 def cmd_graph(args: argparse.Namespace) -> int:
     """Build the knowledge graph from wiki/ wikilinks."""
-    engine = getattr(args, "engine", "builtin")
+    engine = getattr(args, "engine", "graphify")
     if engine == "graphify":
         from llmwiki.graphify_bridge import is_available, build_graphify_graph
         if not is_available():
-            print("error: graphifyy not installed. Run: pip install graphifyy", file=sys.stderr)
-            return 2
-        result = build_graphify_graph()
-        return 0 if result.get("graph") is not None else 1
+            print("  graphifyy not installed — falling back to builtin engine", file=sys.stderr)
+            print("  install with: pip install llmwiki[graph]", file=sys.stderr)
+            engine = "builtin"
+        else:
+            result = build_graphify_graph()
+            return 0 if result.get("graph") is not None else 1
 
     from llmwiki.graph import build_and_report
     write_json = args.format in ("json", "both")
@@ -445,6 +439,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         write_rss,
         write_robots_txt,
         write_ai_readme,
+        write_marp,
         export_all,
     )
     from llmwiki.build import discover_sources, group_by_project, RAW_SESSIONS
@@ -465,6 +460,7 @@ def cmd_export(args: argparse.Namespace) -> int:
             print(f"  wrote {p.relative_to(REPO_ROOT) if p.is_relative_to(REPO_ROOT) else p}")
         return 0
 
+    topic = getattr(args, "topic", "") or ""
     mapping = {
         "llms-txt": lambda: write_llms_txt(out_dir, groups, len(sources)),
         "llms-full-txt": lambda: write_llms_full_txt(out_dir, sources),
@@ -473,6 +469,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         "rss": lambda: write_rss(out_dir, sources),
         "robots": lambda: write_robots_txt(out_dir),
         "ai-readme": lambda: write_ai_readme(out_dir, groups, len(sources)),
+        "marp": lambda: write_marp(out_dir, sources, topic=topic),
     }
     fn = mapping.get(format_)
     if not fn:
@@ -584,7 +581,6 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
 
     summary = synthesize_new_sessions(
         backend=backend,
-        dry_run=args.dry_run,
         force=args.force,
     )
     print(
@@ -917,11 +913,6 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--project", type=str, help="Substring filter on project slug")
     sync.add_argument("--include-current", action="store_true", help="Don't skip live sessions (<60 min)")
     sync.add_argument("--force", action="store_true", help="Ignore state file, reconvert everything")
-    sync.add_argument("--dry-run", action="store_true")
-    sync.add_argument(
-        "--download-images", action="store_true",
-        help="Download remote images in converted .md files to raw/assets/",
-    )
     sync.add_argument(
         "--auto-build", action=argparse.BooleanOptionalAction, default=True,
         help="After sync, auto-rebuild the static site if schedule allows (default: on)",
@@ -988,8 +979,8 @@ def build_parser() -> argparse.ArgumentParser:
     graph = sub.add_parser("graph", help="Build the knowledge graph (graph/graph.json + graph.html)")
     graph.add_argument("--format", choices=["json", "html", "both"], default="both")
     graph.add_argument(
-        "--engine", choices=["builtin", "graphify"], default="builtin",
-        help="Graph engine: 'builtin' (stdlib wikilinks) or 'graphify' (AI-powered, requires graphifyy)",
+        "--engine", choices=["builtin", "graphify"], default="graphify",
+        help="Graph engine: 'graphify' (AI-powered, default) or 'builtin' (stdlib wikilinks fallback)",
     )
     graph.set_defaults(func=cmd_graph)
 
@@ -997,10 +988,11 @@ def build_parser() -> argparse.ArgumentParser:
     exp2 = sub.add_parser("export", help="Export AI-consumable formats (llms-txt, jsonld, sitemap, ...)")
     exp2.add_argument(
         "format",
-        choices=["llms-txt", "llms-full-txt", "jsonld", "sitemap", "rss", "robots", "ai-readme", "all"],
+        choices=["llms-txt", "llms-full-txt", "jsonld", "sitemap", "rss", "robots", "ai-readme", "marp", "all"],
         help="Export format",
     )
     exp2.add_argument("--out", type=Path, default=None, help="Output directory (default: site/)")
+    exp2.add_argument("--topic", type=str, default="", help="Topic filter for marp slide generation")
     exp2.set_defaults(func=cmd_export)
 
     # lint (v1.0, #155) — live count via the rule registry (currently 15)
@@ -1058,10 +1050,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Probe backend availability and exit (exit 0 if reachable)",
     )
     syn.add_argument(
-        "--dry-run", action="store_true",
-        help="List sessions that would be synthesized without writing",
-    )
-    syn.add_argument(
         "--force", action="store_true",
         help="Ignore state file, re-synthesize all sessions",
     )
@@ -1087,6 +1075,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read synthesized body from this file for --complete (default: stdin)",
     )
     syn.set_defaults(func=cmd_synthesize)
+
+    # query — natural-language graph query
+    qry = sub.add_parser("query", help="Query the knowledge graph with a question")
+    qry.add_argument("question", nargs="+", help="The question to ask")
+    qry.add_argument("--depth", type=int, default=3, help="BFS traversal depth (default: 3)")
+    qry.add_argument("--budget", type=int, default=2000, help="Max output tokens (default: 2000)")
+    qry.set_defaults(func=cmd_query)
 
     # version
     ver = sub.add_parser("version", help="Print version")

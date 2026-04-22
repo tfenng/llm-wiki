@@ -113,7 +113,7 @@ def test_fish_includes_every_subcommand():
 
 def test_fish_completes_flags_for_sync():
     script = fish_script()
-    # sync has --auto-build, --auto-lint, --dry-run, --force, --download-images, etc.
+    # sync has --auto-build, --auto-lint, --force, etc.
     assert "-n '__fish_seen_subcommand_from sync'" in script
 
 

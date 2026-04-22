@@ -51,21 +51,8 @@ from llmwiki.changelog_timeline import (
     render_recently_updated,
 )
 from llmwiki.log_reader import recent_events as _recent_log_events
-from llmwiki.compare import (
-    discover_user_overrides,
-    generate_pairs,
-    pair_slug,
-    render_comparison_body,
-    render_comparisons_index,
-)
 from llmwiki.context_md import is_context_file
 from llmwiki.freshness import freshness_badge, load_freshness_config
-from llmwiki.models_page import (
-    discover_model_entities,
-    discover_model_entities_with_meta,
-    render_model_info_card,
-    render_models_index,
-)
 from llmwiki.project_topics import (
     get_project_topics,
     load_project_profile,
@@ -514,8 +501,6 @@ def nav_bar(active: str, link_prefix: str = "") -> str:
       {link("index.html", "Home", "home")}
       {link("projects/index.html", "Projects", "projects")}
       {link("sessions/index.html", "Sessions", "sessions")}
-      {link("models/index.html", "Models", "models")}
-      {link("vs/index.html", "Compare", "vs")}
       {link("graph.html", "Graph", "graph")}
       {link("docs/index.html", "Docs", "docs")}
       {link("changelog.html", "Changelog", "changelog")}
@@ -813,6 +798,10 @@ def render_project_page(
 
     def card(p: Path, meta: dict[str, Any]) -> str:
         slug = meta.get("slug", p.stem)
+        title = meta.get("title", slug)
+        # Strip "Session: project/" prefix for cleaner display
+        if title.startswith("Session: "):
+            title = title[9:]
         date = meta.get("date", "")
         model = meta.get("model", "")
         umsgs = meta.get("user_messages", "")
@@ -820,7 +809,7 @@ def render_project_page(
         href = f"../sessions/{project_slug}/{p.stem}.html"
         badge = render_freshness(meta)
         return f"""  <a class="card" href="{href}">
-    <div class="card-title">{html.escape(str(slug))}</div>
+    <div class="card-title">{html.escape(str(title))}</div>
     <div class="card-meta">{html.escape(str(date))} · {html.escape(str(model))}</div>
     <div class="card-stats muted">{html.escape(str(umsgs))} messages · {html.escape(str(tcalls))} tool calls</div>
     <div class="card-badge">{badge}</div>
@@ -1023,6 +1012,12 @@ def render_sessions_index(
     for p, meta, _ in sorted(sources, key=key, reverse=True):
         project = meta.get("project", p.parent.name)
         slug = meta.get("slug", p.stem)
+        title = meta.get("title", slug)
+        # Strip "Session: " prefix for cleaner display
+        if title.startswith("Session: "):
+            title = title[9:]
+        # Truncate long titles for table display
+        display_title = title[:70] + "..." if len(title) > 70 else title
         date = meta.get("date", "")
         model = meta.get("model", "")
         umsgs = meta.get("user_messages", "")
@@ -1030,7 +1025,7 @@ def render_sessions_index(
         href = f"{project}/{p.stem}.html"
         rows.append(
             f"""        <tr data-project="{html.escape(str(project))}" data-model="{html.escape(str(model))}" data-date="{html.escape(str(date))}" data-slug="{html.escape(str(slug))}">
-          <td><a href="{html.escape(str(href))}">{html.escape(str(slug))}</a></td>
+          <td><a href="{html.escape(str(href))}">{html.escape(str(display_title))}</a></td>
           <td>{render_agent_badge(meta)}</td>
           <td><a href="../projects/{html.escape(str(project))}.html">{html.escape(str(project))}</a></td>
           <td>{html.escape(str(date))}</td>
@@ -1157,25 +1152,11 @@ def render_index(
         metas_by_project[project] = [m for _, m, _ in sessions]
     token_stats_block = render_site_token_stats(metas_by_project, link_prefix="")
 
-    # v0.7 (#56): "Recently updated" list of model entities whose
-    # changelog has an entry in the last 30 days. Empty if no model
-    # pages exist or none have a recent changelog entry.
-    from llmwiki.models_page import discover_model_entities_with_meta as _dm
-    model_entries_meta = _dm(REPO_ROOT / "wiki" / "entities")
-    recent_updates = find_recently_updated(
-        [(p.stem, m) for p, m, _, _, _ in model_entries_meta]
+    # Recently updated — show last 10 entries from wiki/log.md.
+    log_events = _recent_log_events(
+        REPO_ROOT / "wiki" / "log.md", limit=10
     )
-    recent_block_inner = render_recently_updated(
-        recent_updates, link_prefix="models/"
-    )
-    # G-18 (#304): when no model-changelog activity exists, fall back
-    # to the last 10 entries from wiki/log.md so the card isn't empty
-    # on corpora without model pages (the overwhelmingly common case).
-    if not recent_block_inner:
-        log_events = _recent_log_events(
-            REPO_ROOT / "wiki" / "log.md", limit=10
-        )
-        recent_block_inner = render_recent_activity(log_events)
+    recent_block_inner = render_recent_activity(log_events)
     recent_block = (
         f'<section class="section recently-updated-section">\n'
         f'  <div class="container">\n'
@@ -1870,15 +1851,9 @@ def build_site(
     # shipping as HTML.
     readme_path = render_readme_page(out_dir)
     contributing_path = render_contributing_page(out_dir)
-    # v0.7 (#55): models section — sortable index + per-model detail pages.
-    models_index_path, model_count = render_models_section(out_dir)
-    # v0.7 (#58): auto-generated vs-comparison pages + index.
-    vs_index_path, pair_count = render_vs_section(out_dir)
     print(
         "  wrote index.html, projects/index.html, sessions/index.html"
         + (", changelog.html" if cl_path else "")
-        + f", models/index.html ({model_count} models)"
-        + f", vs/index.html ({pair_count} comparisons)"
     )
 
     # Search index (chunked — #47) + tree/flat auto-routing (#53)

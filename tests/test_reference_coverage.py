@@ -141,7 +141,7 @@ def test_slash_reference_counts_correctly():
 # Nav entries we declared in build.py. Adding a `{link(…)}` that isn't
 # listed here will fail — update the list AND the UI reference.
 EXPECTED_NAV_KEYS = {
-    "home", "projects", "sessions", "models", "vs",
+    "home", "projects", "sessions",
     "graph", "docs", "changelog",
 }
 
