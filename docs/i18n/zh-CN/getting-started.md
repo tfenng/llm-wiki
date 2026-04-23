@@ -34,10 +34,10 @@ setup.bat
 
 `setup.sh` / `setup.bat` 会以幂等的方式完成以下步骤：
 
-1. 通过 `pip install --user` 安装 `markdown`（必需）。语法高亮使用 highlight.js（通过 CDN 加载）。
+1. 在当前虚拟环境 / conda 环境中安装 `llmwiki`；如果没有激活环境，则自动创建仓库内的 `.venv` 并安装进去。同时会装上 `markdown` 等必需依赖。语法高亮使用 highlight.js（通过 CDN 加载）。
 2. 创建 `raw/`、`wiki/`、`site/` 目录结构
 3. 运行 `llmwiki adapters` 显示检测到的 Agent
-4. 首次同步的 dry-run 预览，你可以看到将要转换哪些内容
+4. 显示当前同步状态，方便你确认是否已经有可转换的会话
 
 ## 安装后的三个命令
 

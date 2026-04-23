@@ -38,7 +38,7 @@ Be kind. Respect privacy. Prefer plain English to jargon. No scope creep.
 ```bash
 git clone https://github.com/Pratiyush/llm-wiki.git
 cd llm-wiki
-./setup.sh                # installs markdown, scaffolds raw/ wiki/ site/
+./setup.sh                # installs llmwiki + runtime deps, scaffolds raw/ wiki/ site/
 python3 -m pytest tests/ -q
 ```
 

@@ -19,25 +19,38 @@ fi
 PY_VER=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
 echo "    python: $PY_VER"
 
-# 2. Check for markdown package
-if ! python3 -c "import markdown" 2>/dev/null; then
-  echo "==> installing python 'markdown' (required)"
-  python3 -m pip install --user --quiet markdown 2>&1 | tail -2 || true
+# 2. Use the active virtualenv/conda env when present. Otherwise create a
+#    local .venv so Homebrew / PEP 668 system Pythons still get a working
+#    install without requiring global pip changes.
+if [ -n "${VIRTUAL_ENV:-}" ] || [ -n "${CONDA_PREFIX:-}" ]; then
+  PYTHON_BIN="python3"
+else
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
+  if [ ! -x "$PYTHON_BIN" ]; then
+    echo "==> creating local virtualenv (.venv)"
+    python3 -m venv "$SCRIPT_DIR/.venv"
+  fi
 fi
 
-# 3. Syntax highlighting (v0.5): highlight.js loads from CDN at view time,
-#    so there is no longer an optional Python dep to install here.
+# 3. Install runtime + build tooling inside the chosen environment.
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+
+echo "==> installing llmwiki build/runtime deps"
+"$PYTHON_BIN" -m pip install --quiet "setuptools>=82.0.1" wheel markdown
+echo "==> installing llmwiki (-e .)"
+"$PYTHON_BIN" -m pip install --quiet --no-build-isolation -e .
+"$PYTHON_BIN" -c "import llmwiki, markdown"
 
 # 4. Scaffold raw/ wiki/ site/
-python3 -m llmwiki init
+"$PYTHON_BIN" -m llmwiki init
 
 # 5. Show available adapters
-python3 -m llmwiki adapters
+"$PYTHON_BIN" -m llmwiki adapters
 
-# 6. First sync (dry-run so users see what would happen)
+# 6. Show current sync status so users can see what's ready.
 echo
-echo "==> dry-run of first sync:"
-python3 -m llmwiki sync --dry-run || true
+echo "==> current sync status:"
+"$PYTHON_BIN" -m llmwiki sync --status --recent 5 || true
 
 echo
 echo "================================================================"
@@ -52,4 +65,4 @@ echo
 echo "Optional SessionStart hook — auto-sync on every Claude Code launch:"
 echo "  Add this to ~/.claude/settings.json under 'hooks':"
 echo '    "SessionStart": [ { "hooks": [ { "type": "command",'
-echo "      \"command\": \"(python3 $SCRIPT_DIR/llmwiki/convert.py > /tmp/llmwiki-sync.log 2>&1 &) ; exit 0\" } ] } ]"
+echo "      \"command\": \"($SCRIPT_DIR/sync.sh > /tmp/llmwiki-sync.log 2>&1 &) ; exit 0\" } ] } ]"

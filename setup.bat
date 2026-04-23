@@ -18,26 +18,43 @@ if errorlevel 1 (
 for /f "delims=" %%v in ('python -c "import sys; print(\".\".join(map(str, sys.version_info[:2])))"') do set PY_VER=%%v
 echo     python: !PY_VER!
 
-REM 2. Check for markdown
-python -c "import markdown" 2>nul
-if errorlevel 1 (
-  echo ==^> installing python 'markdown' (required)
-  python -m pip install --user --quiet markdown
+REM 2. Use the active virtualenv/conda env when present. Otherwise create a
+REM    local .venv so system Python restrictions do not break setup.
+set "PYTHON_EXE=python"
+if not defined VIRTUAL_ENV if not defined CONDA_PREFIX (
+  if not exist ".venv\Scripts\python.exe" (
+    echo ==^> creating local virtualenv (.venv)
+    python -m venv .venv
+    if errorlevel 1 exit /b 1
+  )
+  set "PYTHON_EXE=.venv\Scripts\python.exe"
 )
 
-REM 3. Syntax highlighting (v0.5): highlight.js loads from CDN at view time,
-REM    so there is no longer an optional Python dep to install here.
+REM 3. Install llmwiki itself so runtime deps come from pyproject.toml.
+set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+set "PIP_ARGS=-e ."
+echo ==^> installing llmwiki build/runtime deps
+!PYTHON_EXE! -m pip install --quiet setuptools^>=82.0.1 wheel markdown
+if errorlevel 1 exit /b 1
+echo ==^> installing llmwiki (!PIP_ARGS!)
+!PYTHON_EXE! -m pip install --quiet --no-build-isolation !PIP_ARGS!
+if errorlevel 1 exit /b 1
+!PYTHON_EXE! -c "import llmwiki, markdown"
+if errorlevel 1 exit /b 1
 
 REM 4. Scaffold raw/ wiki/ site/
-python -m llmwiki init
+!PYTHON_EXE! -m llmwiki init
+if errorlevel 1 exit /b 1
 
 REM 5. Show available adapters
-python -m llmwiki adapters
+!PYTHON_EXE! -m llmwiki adapters
+if errorlevel 1 exit /b 1
 
-REM 6. First sync (dry-run)
+REM 6. Show current sync status so users can see what's ready.
 echo.
-echo ==^> dry-run of first sync:
-python -m llmwiki sync --dry-run
+echo ==^> current sync status:
+!PYTHON_EXE! -m llmwiki sync --status --recent 5
+if errorlevel 1 exit /b 1
 
 echo.
 echo ================================================================

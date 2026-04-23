@@ -38,10 +38,10 @@ setup.bat
 
 `setup.sh` / `setup.bat` does the following, idempotently:
 
-1. Installs `markdown` (the only runtime dep) via `pip install --user`. Syntax highlighting runs in the browser via highlight.js loaded from a CDN, so the build stays stdlib-only.
+1. Installs `llmwiki` in the active virtualenv/conda env, or creates a local `.venv` and installs there. Required runtime deps like `markdown` are installed at the same time.
 2. Scaffolds `raw/`, `wiki/`, `site/` directories
 3. Runs `llmwiki adapters` to show which agents are detected
-4. Does a dry-run of the first sync so you see what *would* be converted
+4. Shows the current sync status so you can see whether any sessions are ready to convert
 
 ### Checking detected agents
 
@@ -143,7 +143,7 @@ To make sync happen automatically every time you start Claude Code, add a `Sessi
         "hooks": [
           {
             "type": "command",
-            "command": "(python3 /absolute/path/to/llm-wiki/llmwiki/convert.py > /tmp/llmwiki-sync.log 2>&1 &) ; exit 0"
+            "command": "(/absolute/path/to/llm-wiki/sync.sh > /tmp/llmwiki-sync.log 2>&1 &) ; exit 0"
           }
         ]
       }

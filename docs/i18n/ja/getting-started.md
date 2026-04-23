@@ -34,10 +34,10 @@ setup.bat
 
 `setup.sh` / `setup.bat` は次の手順を冪等に実行します:
 
-1. `pip install --user` で `markdown`（必須）をインストール。シンタックスハイライトは CDN 経由の highlight.js を使用。
+1. 現在の virtualenv / conda 環境に `llmwiki` をインストールします。環境が有効でない場合は、リポジトリ内に `.venv` を自動作成してそこへインストールします。必須依存の `markdown` もここで一緒に入ります。シンタックスハイライトは CDN 経由の highlight.js を使用。
 2. `raw/`、`wiki/`、`site/` ディレクトリを作成
 3. `llmwiki adapters` を実行して検出された Agent を表示
-4. 最初の同期の dry-run を実行し、何が変換されるかをプレビュー
+4. 現在の同期ステータスを表示し、変換対象のセッションがあるか確認できるようにする
 
 ## インストール後の 3 つのコマンド
 

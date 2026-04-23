@@ -232,6 +232,13 @@ Syntax highlighting is now powered by [highlight.js](https://highlightjs.org/), 
 4. Optionally offers to install the `SessionStart` hook into `~/.claude/settings.json` for auto-sync
 5. Runs a first sync so you see output immediately
 
+### 中文安装补充
+
+- `./setup.sh` 会优先使用你当前激活的 `virtualenv` / `conda` 环境；如果没有激活环境，会在仓库根目录自动创建 `.venv` 并安装依赖。
+- 安装完成后，推荐按这个顺序执行：`./sync.sh` -> `./build.sh` -> `./serve.sh`。
+- 如果直接运行 `./build.sh` 看到 `no sources found.`，通常不是安装失败，而是还没有把本机会话同步到 `raw/sessions/`，先执行一次 `./sync.sh` 即可。
+- `build.sh` / `sync.sh` / `serve.sh` 会优先复用当前环境；如果没有激活环境，也会自动优先使用仓库里的 `.venv`。
+
 ## For maintainers
 
 Running the project? The governance scaffold lives under [`docs/maintainers/`](docs/maintainers) and is loaded by a dedicated skill:
