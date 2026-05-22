@@ -9,8 +9,8 @@ Rebuilt on every `master` push from the synthetic sessions in [`examples/demo-se
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v1.1.0--rc8-10B981.svg)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-2368%20passing-10B981.svg)](tests/)
+[![Version](https://img.shields.io/badge/version-v1.3.82-10B981.svg)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-2651%20passing-10B981.svg)](tests/)
 [![CI](https://github.com/Pratiyush/llm-wiki/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Pratiyush/llm-wiki/actions/workflows/ci.yml)
 [![Link check](https://github.com/Pratiyush/llm-wiki/actions/workflows/link-check.yml/badge.svg?branch=master)](https://github.com/Pratiyush/llm-wiki/actions/workflows/link-check.yml)
 [![Wiki checks](https://github.com/Pratiyush/llm-wiki/actions/workflows/wiki-checks.yml/badge.svg?branch=master)](https://github.com/Pratiyush/llm-wiki/actions/workflows/wiki-checks.yml)
@@ -33,7 +33,8 @@ Every Claude Code, Codex CLI, Copilot, Cursor, and Gemini CLI session writes a f
 ./build.sh && ./serve.sh           # build + serve at http://127.0.0.1:8765
 ```
 
-![llm-wiki demo](docs/demo.gif)
+![llmwiki — 70-second demo](docs/demo.gif)
+
 
 **Contributing in one line:** read [`CONTRIBUTING.md`](CONTRIBUTING.md), keep PRs focused (one concern each), use `feat:` / `fix:` / `docs:` / `chore:` / `test:` commit prefixes, never commit real session data (`raw/` is gitignored), no new runtime deps. CI must be green to merge.
 
@@ -95,7 +96,7 @@ Site-level AI-agent entry points:
 
 | File | What |
 |---|---|
-| [`/llms.txt`](docs/v0.4-roadmap.md) | Short index per [llmstxt.org spec](https://llmstxt.org) |
+| [`/llms.txt`](https://llmstxt.org) | Short index per [llmstxt.org spec](https://llmstxt.org) |
 | `/llms-full.txt` | Flattened plain-text dump (~5 MB cap) — paste into any LLM's context |
 | `/graph.jsonld` | Schema.org JSON-LD entity/concept/source graph |
 | `/sitemap.xml` | Standard sitemap with `lastmod` |
@@ -106,10 +107,40 @@ Site-level AI-agent entry points:
 
 Every page also includes an `<!-- llmwiki:metadata -->` HTML comment that AI agents can parse without fetching the separate `.json` sibling.
 
+#### Recipe — query `graph.jsonld` from your terminal
+
+The JSON-LD graph isn't just for crawlers — you can ask quick questions about your wiki without leaving the shell. Example: print every session as a tree, grouped by project:
+
+```bash
+python3 examples/scripts/tree_from_graph.py
+```
+
+Output:
+
+```
+📚 8 sessions across 3 projects
+   (site/graph.jsonld v1.3.0)
+
+llmwiki/
+├── demo-blog-engine/  (4 sessions)
+│   ├── 2026-03-12  scaffolding-the-rust-blog-engine
+│   ├── 2026-03-18  adding-syntax-highlighting
+│   ├── 2026-03-25  rss-feed-and-sitemap
+│   └── 2026-04-01  dark-mode-toggle
+├── demo-ml-pipeline/  (2 sessions)
+│   ├── 2026-01-20  training-data-pipeline
+│   └── 2026-02-02  model-training-loop
+└── demo-todo-api/  (2 sessions)
+    ├── 2026-02-08  fastapi-project-bootstrap
+    └── 2026-02-15  adding-oauth-login
+```
+
+The full script is **stdlib-only** at [`examples/scripts/tree_from_graph.py`](examples/scripts/tree_from_graph.py). Same recipe pattern works for any aggregation question — count sessions per model, find the largest project by token usage, list every entity that appears in 3+ sessions, etc. The graph is yours to slice.
+
 ### Quality & governance (v1.0)
 - **4-factor confidence scoring** — source count, source quality, recency, cross-references; with Ebbinghaus-inspired decay per content-type
 - **5-state lifecycle machine** — draft → reviewed → verified → stale → archived with 90-day auto-stale
-- **14 lint rules** — 8 structural (frontmatter, link integrity, orphans, freshness, duplicates, index sync…) + 3 LLM-powered (contradictions, claim verification, summary accuracy) + stale_candidates (#51) + tags_topics_convention (#302) + stale_reference_detection (#303)
+- **16 lint rules** — 8 structural (frontmatter, link integrity, orphans, freshness, duplicates, index sync…) + 3 LLM-powered (contradictions, claim verification, summary accuracy) + stale_candidates (#51) + tags_topics_convention (#302) + stale_reference_detection (#303) + frontmatter_count_consistency (#378) + tools_consistency (#378)
 - **Auto Dream** — MEMORY.md consolidation after 24h + 5 sessions: resolve relative dates, prune outdated, 200-line cap
 - **9 navigation files** — CLAUDE.md, AGENTS.md, MEMORY.md, SOUL.md, CRITICAL_FACTS.md, hints.md, hot.md + per-project hot caches
 
@@ -122,13 +153,64 @@ Every page also includes an `<!-- llmwiki:metadata -->` HTML comment that AI age
 
 ### Automation
 - **SessionStart hook** — auto-syncs new sessions in the background on every Claude Code launch
-- **File watcher** — `llmwiki watch` polls agent stores with debounce and runs sync on change
 - **Auto-build on sync** — `/wiki-sync` triggers `/wiki-build` (configurable; default on)
-- **Configurable scheduled sync** — `llmwiki schedule` generates OS-specific task files (launchd/systemd/Task Scheduler)
+- **One-shot pipeline** — `llmwiki all` runs build → graph → export → lint in a single command (`--strict` for CI)
 - **MCP server** — 12 production tools (query, search, list, read, lint, sync, export, + confidence, lifecycle, dashboard, entity search, category browse) queryable from any MCP client (Claude Desktop, Cline, Cursor, ChatGPT desktop)
-- **Multi-agent skill mirror** — `llmwiki install-skills` mirrors `.claude/skills/` to `.codex/skills/` and `.agents/skills/`
 - **Pending ingest queue** — SessionStart hook converts + queues; `/wiki-sync` processes queue
 - **No servers, no database, no npm** — Python stdlib + `markdown`. Syntax highlighting loads from a highlight.js CDN at view time.
+
+## Tutorial — every command in 90 seconds
+
+A guided tour. Run these in order and you'll have a fully working wiki at `http://127.0.0.1:8765/` by the end. Each command is idempotent and prints what it did.
+
+A scripted recording of the same flow ships at [`docs/videos/cli-tutorial.gif`](docs/videos/cli-tutorial.gif) (31 seconds against an 8-session sandbox). The reproducible source is [`docs/videos/cli-tutorial.tape`](docs/videos/cli-tutorial.tape) — re-render anytime with `vhs docs/videos/cli-tutorial.tape`.
+
+```bash
+# 1. One-time scaffold (≈1 sec). Creates raw/, wiki/, site/, seed nav files.
+llmwiki init
+
+# 2. Pull in your sessions (≈1 sec / 100 sessions). Walks every adapter
+#    that's "available" on this machine (Claude Code, Codex CLI, Cursor,
+#    Gemini, Obsidian, Copilot Chat / CLI), converts new .jsonl files to
+#    raw/sessions/*.md, then runs build + lint by default.
+llmwiki sync
+
+# 3. Compile the static HTML site (≈3 sec on a 500-session corpus).
+#    Already runs as part of `sync`; call directly when you're iterating
+#    on a wiki/ page and don't need a fresh sync.
+llmwiki build
+
+# 4. Browse it locally. Cmd+K opens the search palette; / focuses the
+#    filter bar on /sessions/. Press Ctrl+C to stop.
+llmwiki serve
+
+# 5. (Optional) Generate the knowledge graph + AI-consumable exports.
+#    `all` runs build → graph → export → lint in one shot.
+llmwiki graph
+llmwiki export all
+llmwiki all     # one-shot equivalent of build + graph + export + lint
+```
+
+That's the entire happy path. Two more commands you'll reach for occasionally:
+
+```bash
+# Inspect what's installed + configured. Prints a per-adapter table:
+# (available: yes/no, configured: yes/no, session-store path).
+llmwiki adapters
+
+# Lint the wiki. 16 rules — broken wikilinks, orphaned pages, stale
+# summaries, duplicate detection, freshness, missing entities, etc.
+# Runs as part of `sync` by default; call directly for a one-shot check.
+llmwiki lint
+```
+
+Three optional flags you'll discover later:
+
+- `--adapter <name>` — limit `sync` to one adapter (e.g. `--adapter claude_code`)
+- `--vault PATH` — write into an Obsidian / Logseq vault overlay instead of `wiki/` (#54)
+- `--synthesize` — call out to a local Claude / Ollama backend during `build` for an LLM-generated overview page
+
+Each subcommand has its own `--help` with the rest. The CLI reference table below is the full list.
 
 ## How it works
 
@@ -217,9 +299,10 @@ setup.bat
 
 ```bash
 pip install -e .                # basic — everything you need
-pip install -e '.[pdf]'         # + PDF ingestion
+pip install -e '.[graph]'       # + graphifyy AI-powered graph engine
 pip install -e '.[dev]'         # + pytest + ruff
-pip install -e '.[all]'         # all of the above
+pip install -e '.[e2e]'         # + Playwright + pytest-bdd + pytest-html (E2E)
+pip install -e '.[all]'         # graph + everything
 ```
 
 Syntax highlighting is now powered by [highlight.js](https://highlightjs.org/), loaded from a CDN at view time — no optional deps required.
@@ -264,7 +347,7 @@ Four Claude Code slash commands automate the common ops:
 
 ## Running E2E tests
 
-The unit suite (`pytest tests/` — 472 tests) runs in milliseconds and
+The unit suite (`pytest tests/` — 2,651 tests) runs in seconds and
 covers every module. The **end-to-end suite** under `tests/e2e/` is
 separate: it builds a minimal demo site, serves it on a random port,
 drives a real browser via [Playwright](https://playwright.dev/python),
@@ -275,7 +358,7 @@ Why both? Unit tests lock the contract at the module boundary;
 E2E locks the contract at the **user's browser**. A diff that passes
 unit tests but breaks the Cmd+K palette will fail E2E.
 
-Install the extras (one-time, ~300 MB for Chromium):
+Install the extras (one-time, several hundred MB for the Chromium binary):
 
 ```bash
 pip install -e '.[e2e]'
@@ -332,15 +415,7 @@ stdout/stderr, screenshot on failure.
 
 ## Scheduled sync
 
-Run `llmwiki schedule` to generate the right scheduled task file for your OS from your config (cadence, time, paths). Or copy a static template:
-
-| OS | Auto-generate | Static template | Install guide |
-|---|---|---|---|
-| macOS | `llmwiki schedule --platform macos` | [`launchd.plist`](examples/scheduled-sync-templates/launchd.plist) | [docs/scheduled-sync.md](docs/scheduled-sync.md#macos-launchd) |
-| Linux | `llmwiki schedule --platform linux` | [`systemd.timer`](examples/scheduled-sync-templates/llmwiki-sync.timer) + [`.service`](examples/scheduled-sync-templates/llmwiki-sync.service) | [docs/scheduled-sync.md](docs/scheduled-sync.md#linux-systemd) |
-| Windows | `llmwiki schedule --platform windows` | [`task.xml`](examples/scheduled-sync-templates/llmwiki-sync-task.xml) | [docs/scheduled-sync.md](docs/scheduled-sync.md#windows-task-scheduler) |
-
-Cadence (`daily` / `weekly` / `hourly`), hour/minute, and paths are all configurable in `examples/sessions_config.json`. See [`docs/scheduled-sync.md`](docs/scheduled-sync.md) for full instructions.
+For a daily / weekly cron-style sync, schedule `llmwiki sync` directly via your OS's native job runner (`launchd` on macOS, `systemd` on Linux, Task Scheduler on Windows). Paths and adapter selection come from `examples/sessions_config.json`.
 
 ## CLI reference
 
@@ -351,19 +426,10 @@ llmwiki build                   # compile static HTML + AI exports
 llmwiki serve                   # local HTTP server on 127.0.0.1:8765
 llmwiki adapters                # list available adapters + configured state (v1.0)
 llmwiki graph                   # build knowledge graph (v0.2)
-llmwiki watch                   # file watcher with debounce (v0.2)
-llmwiki export-obsidian         # write wiki to Obsidian vault (v0.2)
-llmwiki export-qmd              # export wiki as a qmd collection (v0.6)
-llmwiki export-marp             # export Marp slide deck from wiki (v0.7)
-llmwiki eval                    # 7-check structural quality score /100 (v0.3)
-llmwiki lint                    # 11-rule wiki lint (8 basic + 3 LLM-powered, v1.0)
-llmwiki check-links             # verify internal links in site/ (v0.4)
+llmwiki lint                    # 16-rule wiki lint (v1.2)
 llmwiki export <format>         # AI-consumable exports (v0.4)
 llmwiki synthesize              # auto-ingest synthesis pipeline (v0.5)
-llmwiki manifest                # build site manifest + perf budget (v0.4)
-llmwiki link-obsidian           # symlink project into Obsidian vault (v1.0)
-llmwiki install-skills          # mirror .claude/skills to .codex/ and .agents/ (v1.0)
-llmwiki schedule                # generate OS-specific scheduled sync task (v1.0)
+llmwiki all                     # build → graph → export → lint in one shot (v1.2)
 llmwiki version
 ```
 
@@ -377,11 +443,10 @@ Each subcommand has its own `--help`. All commands are also wrapped in one-click
 | [Obsidian](https://obsidian.md) (input) | `llmwiki.adapters.obsidian` | ✅ Production | v0.1 |
 | [Obsidian](https://obsidian.md) (output) | `llmwiki.obsidian_output` | ✅ Production | v0.2 |
 | [Codex CLI](https://github.com/openai/codex) | `llmwiki.adapters.codex_cli` | ✅ Production | v0.3 |
-| [Cursor](https://cursor.com) | `llmwiki.adapters.cursor` | ✅ Production | v0.5 |
-| [Gemini CLI](https://ai.google.dev/gemini-api) | `llmwiki.adapters.gemini_cli` | ✅ Production | v0.5 |
-| PDF files | `llmwiki.adapters.pdf` | ✅ Production | v0.5 |
-| [Copilot Chat](https://github.com/features/copilot) | `llmwiki.adapters.copilot_chat` | ✅ Production | v0.9 |
-| [Copilot CLI](https://github.com/features/copilot) | `llmwiki.adapters.copilot_cli` | ✅ Production | v0.9 |
+| [Cursor](https://cursor.com) | `llmwiki.adapters.cursor` | 🧪 Beta — needs verification against current Cursor session format | v0.5 |
+| [Gemini CLI](https://ai.google.dev/gemini-api) | `llmwiki.adapters.gemini_cli` | 🧪 Beta — layout TBC | v0.5 |
+| [Copilot Chat](https://github.com/features/copilot) | `llmwiki.adapters.copilot_chat` | 🧪 Beta | v0.9 |
+| [Copilot CLI](https://github.com/features/copilot) | `llmwiki.adapters.copilot_cli` | 🧪 Beta | v0.9 |
 | OpenCode / OpenClaw | — | ⏸ Deferred | — |
 
 Adding a new agent is [one small file](docs/framework.md) — subclass `BaseAdapter`, declare `SUPPORTED_SCHEMA_VERSIONS`, ship a fixture + snapshot test.
@@ -481,7 +546,7 @@ See [docs/architecture.md](docs/architecture.md) for the full breakdown and how 
 
 ## Design principles
 
-- **Stdlib first** — only mandatory runtime dep is `markdown`. `pypdf` is an optional extra for PDF ingestion.
+- **Stdlib first** — only mandatory runtime dep is `markdown`. Optional extras (`graph`, `dev`, `e2e`) layer in graph engines, lint/test tooling, and Playwright on top.
 - **Works offline** — no Google fonts, no external CSS. Syntax highlighting loads from a highlight.js CDN but degrades gracefully without it.
 - **Redact by default** — username, API keys, tokens, emails all get redacted before entering the wiki.
 - **Idempotent everything** — re-running any command is safe and cheap.
@@ -497,13 +562,11 @@ See [docs/architecture.md](docs/architecture.md) for the full breakdown and how 
 - [Architecture](docs/architecture.md) — Karpathy 3-layer + 8-layer build breakdown
 - [Configuration](docs/configuration.md) — every tuning knob
 - [Privacy](docs/privacy.md) — redaction rules + `.llmwikiignore` + localhost binding
-- [Scheduled sync](docs/scheduled-sync.md) — daily/weekly/hourly task setup per OS
 - [Windows setup](docs/windows-setup.md) — Windows-specific gotchas
 - [Framework](docs/framework.md) — Open Source Framework v4.1 adapted for agent-native dev tools
 - [Research](docs/research.md) — Phase 1.25 analysis of 15 prior LLM Wiki implementations
 - [Feature matrix](docs/feature-matrix.md) — all 161 features across 16 categories
 - [Roadmap](docs/roadmap.md) — Phase × Layer × Item MoSCoW table
-- [v0.4 roadmap](docs/v0.4-roadmap.md) — AI & Human Dual-Format plan
 - **Translations**: [i18n/zh-CN](docs/i18n/zh-CN/), [i18n/ja](docs/i18n/ja/), [i18n/es](docs/i18n/es/)
 
 Per-adapter docs:
@@ -512,7 +575,6 @@ Per-adapter docs:
 - [Cursor adapter](docs/adapters/cursor.md)
 - [Gemini CLI adapter](docs/adapters/gemini-cli.md)
 - [Obsidian adapter](docs/adapters/obsidian.md)
-- [PDF adapter](docs/adapters/pdf.md)
 - [Copilot adapter (Chat + CLI)](docs/adapters/copilot.md)
 
 ## Releases
@@ -538,6 +600,7 @@ Per-adapter docs:
 | [v1.1.0-rc6](https://github.com/Pratiyush/llm-wiki/releases/tag/v1.1.0-rc6) | rc6 batch — fixed adapter tag hardcoded to `claude-code` for every adapter (#346), tutorial UX polish with in-page TOC + prev/next + edit-on-GitHub (#282), command palette now indexes 107 doc pages + 17 slash commands (#277), content-hash cache for `md_to_html` (#283) | `v1.1.0-rc6` |
 | [v1.1.0-rc7](https://github.com/Pratiyush/llm-wiki/releases/tag/v1.1.0-rc7) | rc7 batch — automatic AI-suggested tags during synthesis (#351), link-checker config fix (#348, #350, #353) | `v1.1.0-rc7` |
 | [v1.1.0-rc8](https://github.com/Pratiyush/llm-wiki/releases/tag/v1.1.0-rc8) | rc8 batch — complete Mode B agent-delegate backend (#316): new `llmwiki synthesize --list-pending` + `--complete <uuid>` CLI subcommands, `/wiki-sync` step 6 auto-detects pending prompts, Mode B ships end-to-end without an API key | `v1.1.0-rc8` |
+| [**v1.2.0**](https://github.com/Pratiyush/llm-wiki/releases/tag/v1.2.0) | **First stable on the 1.x line** — `llmwiki all` one-shot pipeline runner, Playwright + axe-core E2E suite (#384), project-stub auto-seeding, 2 new lint rules, critical export-fidelity + sync-collision fixes, 10 UX-critique items (#387). PyPI distribution name: `llm-notebook`. | `v1.2.0` |
 
 ## Roadmap
 

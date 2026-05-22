@@ -78,7 +78,14 @@ def _patch(monkeypatch, home, out_dir, state):
 
 
 def test_subagent_collision_is_resolved_with_hash_suffix(tmp_path, monkeypatch):
-    """Parent + subagent that share start-time + slug both land on disk."""
+    """Parent + subagent that share start-time + slug both land on disk.
+
+    With the #406 fix, the subagent file gets a ``-subagent-<id>`` suffix
+    on its slug at render time, so parent + subagent no longer COLLIDE
+    on the canonical name — they land at distinct filenames without
+    needing the disambiguator. The original intent of this test (both
+    files survive) still holds; just the mechanism changed.
+    """
     home, proj, out_dir, state = _seed_env(tmp_path)
 
     ts = "2026-04-16T10:00:00Z"
@@ -100,10 +107,14 @@ def test_subagent_collision_is_resolved_with_hash_suffix(tmp_path, monkeypatch):
     assert rc in (0, 1)
 
     outs = sorted(out_dir.rglob("*.md"))
-    disambig = [p for p in outs if "--" in p.name]
-    canonical = [p for p in outs if "--" not in p.name]
-    assert canonical, f"canonical name missing; got {outs}"
-    assert disambig, f"disambiguated file missing; got {outs}"
+    # Both files must land — parent at canonical name, subagent at
+    # <slug>-subagent-<agent_id>.md.
+    assert len(outs) == 2, f"expected 2 files, got {[p.name for p in outs]}"
+    names = [p.name for p in outs]
+    parent_files = [n for n in names if "subagent" not in n]
+    subagent_files = [n for n in names if "subagent" in n]
+    assert parent_files, f"parent file missing; got {names}"
+    assert subagent_files, f"subagent file missing; got {names}"
 
 
 def test_second_source_with_identical_canonical_name_gets_hash(tmp_path, monkeypatch):
@@ -148,3 +159,184 @@ def test_resync_same_source_is_idempotent(tmp_path, monkeypatch):
                   state_file=state, include_current=True)
     second = sorted(out_dir.rglob("*.md"))
     assert first == second, f"re-sync grew the tree: {first} → {second}"
+
+
+def test_force_sync_does_not_drop_colliding_sources(tmp_path, monkeypatch):
+    """Regression: sync --force used to gate the collision disambiguator
+    on ``not force``, so two sources producing the same canonical name
+    silently overwrote each other. On real corpora this cost ~200
+    sessions out of 495. Fix: disambiguation now keys off the set of
+    names written in THIS run, independent of --force.
+    """
+    home, proj, out_dir, state = _seed_env(tmp_path)
+    ts = "2026-04-16T10:00:00Z"
+
+    # Three sources, all collide on (date, project, slug) → same canonical.
+    _write_jsonl(proj / "a.jsonl", "sess-a", ts, slug="dup")
+    _write_jsonl(proj / "b.jsonl", "sess-b", ts, slug="dup")
+    _write_jsonl(proj / "c.jsonl", "sess-c", ts, slug="dup")
+
+    _patch(monkeypatch, home, out_dir, state)
+    c.discover_adapters()
+
+    # --force wipes state, which used to also wipe the collision guard.
+    c.convert_all(
+        adapters=["claude_code"], out_dir=out_dir, state_file=state,
+        include_current=True, force=True,
+    )
+
+    outs = sorted(out_dir.rglob("*.md"))
+    canonical = [p for p in outs if "--" not in p.name]
+    disambig = [p for p in outs if "--" in p.name]
+
+    # All 3 sources must land on disk — one at canonical, two with hashes.
+    assert len(outs) == 3, (
+        f"expected 3 files on disk, got {len(outs)}: {[p.name for p in outs]}"
+    )
+    assert len(canonical) == 1 and len(disambig) == 2, (
+        f"expected 1 canonical + 2 disambiguated, got "
+        f"canonical={[p.name for p in canonical]}, "
+        f"disambig={[p.name for p in disambig]}"
+    )
+
+
+def test_three_way_collision_no_force_all_land(tmp_path, monkeypatch):
+    """Without --force, three colliding sources still all land (1 canonical +
+    2 disambiguated). This is the baseline the --force path must match."""
+    home, proj, out_dir, state = _seed_env(tmp_path)
+    ts = "2026-04-16T10:00:00Z"
+
+    _write_jsonl(proj / "a.jsonl", "sess-a", ts, slug="triple")
+    _write_jsonl(proj / "b.jsonl", "sess-b", ts, slug="triple")
+    _write_jsonl(proj / "c.jsonl", "sess-c", ts, slug="triple")
+
+    _patch(monkeypatch, home, out_dir, state)
+    c.discover_adapters()
+    c.convert_all(
+        adapters=["claude_code"], out_dir=out_dir, state_file=state,
+        include_current=True, force=False,
+    )
+
+    outs = sorted(out_dir.rglob("*.md"))
+    canonical = [p for p in outs if "--" not in p.name]
+    disambig = [p for p in outs if "--" in p.name]
+    assert len(outs) == 3, [p.name for p in outs]
+    assert len(canonical) == 1 and len(disambig) == 2
+
+
+def test_resync_preserves_disambiguated_filenames(tmp_path, monkeypatch):
+    """After an initial sync creates one canonical + one disambiguated
+    file, a second sync (no --force) must leave the tree exactly as it
+    was. The state file remembers which source owned the hashed name,
+    so neither source regenerates or clobbers."""
+    home, proj, out_dir, state = _seed_env(tmp_path)
+    ts = "2026-04-16T10:00:00Z"
+
+    _write_jsonl(proj / "a.jsonl", "sess-a", ts, slug="same")
+    _write_jsonl(proj / "b.jsonl", "sess-b", ts, slug="same")
+
+    _patch(monkeypatch, home, out_dir, state)
+    c.discover_adapters()
+    c.convert_all(adapters=["claude_code"], out_dir=out_dir,
+                  state_file=state, include_current=True)
+
+    first = sorted(p.name for p in out_dir.rglob("*.md"))
+    assert len(first) == 2, first
+
+    # Second sync, same inputs, no --force. State says these sources
+    # are already converted (mtime unchanged), so sync should short-
+    # circuit at the "unchanged" branch and touch nothing on disk.
+    c.convert_all(adapters=["claude_code"], out_dir=out_dir,
+                  state_file=state, include_current=True)
+
+    second = sorted(p.name for p in out_dir.rglob("*.md"))
+    assert first == second, (
+        f"re-sync grew or renamed the tree: {first} → {second}"
+    )
+
+
+def test_disambiguated_names_stable_across_incremental_sync(tmp_path, monkeypatch):
+    """A new colliding source added in a later sync must NOT retroactively
+    rename already-written siblings. The original canonical + original
+    hash survive; only the newcomer gets its own hash.
+
+    Regression guard: a naive implementation of the "rewrite on collision"
+    path could re-assign hashes based on sort order, which would make
+    every existing disambiguated file orphan on the next sync — a silent
+    corruption that's much worse than the data-loss bug this module
+    already guards against.
+    """
+    home, proj, out_dir, state = _seed_env(tmp_path)
+    ts = "2026-04-16T10:00:00Z"
+
+    # Sync 1: two colliding sources → one canonical, one hashed.
+    _write_jsonl(proj / "first.jsonl", "sess-1", ts, slug="stable")
+    _write_jsonl(proj / "second.jsonl", "sess-2", ts, slug="stable")
+    _patch(monkeypatch, home, out_dir, state)
+    c.discover_adapters()
+    c.convert_all(adapters=["claude_code"], out_dir=out_dir,
+                  state_file=state, include_current=True)
+    after_first = sorted(p.name for p in out_dir.rglob("*.md"))
+    assert len(after_first) == 2
+
+    # Sync 2: add a third colliding source. The two from sync 1 must
+    # remain byte-identical; only a new file lands for sync-3's source.
+    _write_jsonl(proj / "third.jsonl", "sess-3", ts, slug="stable")
+    c.convert_all(adapters=["claude_code"], out_dir=out_dir,
+                  state_file=state, include_current=True)
+    after_second = sorted(p.name for p in out_dir.rglob("*.md"))
+
+    assert len(after_second) == 3, after_second
+    # Every filename from sync 1 must still exist verbatim in sync 2.
+    for name in after_first:
+        assert name in after_second, (
+            f"sync-2 renamed or removed {name!r}: {after_second}"
+        )
+
+
+def test_disambiguated_source_file_matches_disk(tmp_path, monkeypatch):
+    """#404 + #427: the ``source_file:`` frontmatter field must point at
+    the actual on-disk filename — including the ``--<hash>`` suffix on
+    disambiguated files. Before the fix, ``render_session_markdown``
+    hard-coded the canonical filename in the frontmatter, so disambiguated
+    files all carried a ``source_file:`` that resolved to a sibling file
+    (or a 404 in the graph viewer).
+    """
+    home, proj, out_dir, state = _seed_env(tmp_path)
+    ts = "2026-04-16T10:00:00Z"
+
+    # Two colliding sources → one canonical, one hashed.
+    _write_jsonl(proj / "alpha.jsonl", "sess-a", ts, slug="dup-check")
+    _write_jsonl(proj / "beta.jsonl", "sess-b", ts, slug="dup-check")
+
+    _patch(monkeypatch, home, out_dir, state)
+    c.discover_adapters()
+    c.convert_all(adapters=["claude_code"], out_dir=out_dir,
+                  state_file=state, include_current=True)
+
+    outs = sorted(out_dir.rglob("*.md"))
+    assert len(outs) == 2, [p.name for p in outs]
+
+    # For every output file, the source_file: frontmatter line must name
+    # that exact file (matching disambiguated suffix where present).
+    for p in outs:
+        body = p.read_text(encoding="utf-8")
+        # Pull out the source_file: line from the frontmatter
+        sf_line = next(
+            (line for line in body.splitlines() if line.startswith("source_file:")),
+            None,
+        )
+        assert sf_line is not None, f"no source_file: line in {p.name}"
+        # Frontmatter says raw/sessions/<filename>; check the trailing path matches
+        recorded_filename = sf_line.split("/")[-1]
+        assert recorded_filename == p.name, (
+            f"frontmatter source_file mismatch in {p.name}: "
+            f"frontmatter says {recorded_filename!r}, file is {p.name!r}"
+        )
+
+    # Stronger check: at least one of the two files must be disambiguated
+    # (carry --<hash>) — otherwise the test isn't exercising the fix.
+    disambig_files = [p for p in outs if "--" in p.name]
+    assert disambig_files, (
+        f"test setup failed to produce disambiguation: {[p.name for p in outs]}"
+    )

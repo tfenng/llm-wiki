@@ -26,6 +26,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -136,14 +137,30 @@ TOOLS = [
         "description": (
             "Run the session-transcript converter to pull in any new sessions "
             "from the agent's session store into raw/sessions/. Returns the "
-            "converter's summary line."
+            "converter's summary line. Defaults to dry-run; pass confirm=true "
+            "to actually write."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
+                # #sec-12 (#556): default to dry_run=true so an MCP client
+                # can't silently mutate raw/ on a misclick / hallucinated
+                # tool call. Pass `confirm: true` to actually write.
                 "dry_run": {
                     "type": "boolean",
-                    "description": "If true, preview without writing.",
+                    "description": (
+                        "If true (default), preview without writing. Set "
+                        "false ONLY together with confirm=true."
+                    ),
+                    "default": True,
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": (
+                        "Required to actually write. Without confirm=true "
+                        "the call always runs as a dry-run regardless of "
+                        "dry_run."
+                    ),
                     "default": False,
                 },
             },
@@ -272,6 +289,22 @@ TOOLS = [
 # ─── Tool implementations ─────────────────────────────────────────────────
 
 
+# #482: top-level directories the MCP read-page tool is allowed to
+# return content from. Anything outside this set is rejected even
+# though it lives under REPO_ROOT — e.g. .git/, .env, .venv/, the
+# state files (.llmwiki-state.json contains absolute paths to every
+# Claude session file → host directory listing leak), and dotfiles
+# in general. README, CHANGELOG, CONTRIBUTING are allowed by name
+# because they're the documentation surface every consumer expects.
+_READ_PAGE_ALLOWED_DIRS: tuple[str, ...] = (
+    "wiki", "raw", "docs", "examples", "site",
+)
+_READ_PAGE_ALLOWED_ROOT_FILES: frozenset[str] = frozenset({
+    "README.md", "CHANGELOG.md", "CONTRIBUTING.md",
+    "LICENSE", "LICENSE.md",
+})
+
+
 def _safe_path(rel: str) -> Path | None:
     """Resolve a user-supplied path relative to REPO_ROOT and refuse if it
     escapes the repo (path traversal guard)."""
@@ -283,6 +316,31 @@ def _safe_path(rel: str) -> Path | None:
     except ValueError:
         return None
     return p
+
+
+def _is_read_page_allowed(p: Path) -> bool:
+    """#482: restrict `tool_wiki_read_page` to a documented surface.
+
+    The path-traversal guard in `_safe_path` only checks the file is
+    *under* REPO_ROOT. That still leaks every dotfile, the .git
+    directory, the state files, and node_modules. Apply an explicit
+    allowlist on top — the docs surface, plus the user's wiki/raw
+    content. Anything else is silently a "not found".
+    """
+    try:
+        rel_parts = p.resolve().relative_to(REPO_ROOT.resolve()).parts
+    except ValueError:
+        return False
+    if not rel_parts:
+        return False
+    head = rel_parts[0]
+    # Top-level allowlisted directory?
+    if head in _READ_PAGE_ALLOWED_DIRS:
+        return True
+    # Single allowlisted file at the root?
+    if len(rel_parts) == 1 and head in _READ_PAGE_ALLOWED_ROOT_FILES:
+        return True
+    return False
 
 
 def tool_wiki_query(args: dict[str, Any]) -> dict[str, Any]:
@@ -301,27 +359,57 @@ def tool_wiki_query(args: dict[str, Any]) -> dict[str, Any]:
     index = (wiki / "index.md").read_text(encoding="utf-8") if (wiki / "index.md").exists() else ""
     overview = (wiki / "overview.md").read_text(encoding="utf-8") if (wiki / "overview.md").exists() else ""
 
-    # Scan every .md under wiki/ for matches on title + body
+    # Scan every .md under wiki/ for matches on title + body.
+    # #418: ranking is now length-normalised — body matches are
+    # divided by ``log2(max(len(content), 256))`` so a 1MB log
+    # page can't beat a perfectly-relevant 1-paragraph entity page
+    # just by accidentally containing every query token. Title
+    # matches are unchanged since titles are already short and
+    # high-signal.
     query_lower = question.lower()
     tokens = [t for t in re.split(r"\W+", query_lower) if t]
-    matches: list[tuple[int, Path, str]] = []
+    matches: list[tuple[float, Path, str]] = []
+    # #483: bound input bytes so a single large file or a giant corpus
+    # can't OOM the MCP server.
+    budget = _MCP_SCAN_AGGREGATE_BYTES
+    skipped_oversize = 0
     for page in wiki.rglob("*.md"):
-        try:
-            content = page.read_text(encoding="utf-8")
-        except OSError:
+        if budget <= 0:
+            break
+        content, consumed = _read_capped(page, remaining_budget=budget)
+        if consumed == 0:
+            try:
+                if page.stat().st_size > _MCP_SCAN_PER_FILE_BYTES:
+                    skipped_oversize += 1
+            except OSError:
+                pass
             continue
+        budget -= consumed
         content_lower = content.lower()
-        score = 0
+        body_score = 0
         if query_lower in content_lower:
-            score += 50
-        score += sum(10 for t in tokens if t in content_lower)
-        # Title bonus
+            body_score += 50
+        body_score += sum(10 for t in tokens if t in content_lower)
+        # Length normalisation: divide raw body score by
+        # log2(max(len, 256)). The 256-byte floor keeps very short
+        # pages (frontmatter-only) from getting a massive boost on
+        # zero-token queries.
+        if body_score > 0:
+            import math as _math
+            length_factor = _math.log2(max(len(content), 256))
+            normalised_body = body_score / length_factor
+        else:
+            normalised_body = 0.0
+        # Title bonus — unchanged. Titles are already short and
+        # high-signal; no normalisation needed.
+        title_score = 0
         title_match = re.search(r'^title:\s*"?([^"\n]+)', content, re.MULTILINE)
         if title_match:
             title = title_match.group(1).lower()
             if query_lower in title:
-                score += 100
-            score += sum(20 for t in tokens if t in title)
+                title_score += 100
+            title_score += sum(20 for t in tokens if t in title)
+        score = normalised_body + title_score
         if score > 0:
             snippet = _extract_snippet(content, tokens, max_chars=400)
             matches.append((score, page, snippet))
@@ -336,7 +424,7 @@ def tool_wiki_query(args: dict[str, Any]) -> dict[str, Any]:
     else:
         for score, page, snippet in top:
             rel = page.relative_to(REPO_ROOT)
-            out.append(f"## `{rel}` (score: {score})\n")
+            out.append(f"## `{rel}` (score: {score:.1f})\n")
             out.append(snippet)
             out.append("")
     out.append("---\n")
@@ -361,7 +449,61 @@ def _extract_snippet(content: str, tokens: list[str], max_chars: int = 400) -> s
     return content[:max_chars] + ("…" if len(content) > max_chars else "")
 
 
+_SEARCH_HIT_CAP = 200
+
+# #483: per-file + aggregate byte caps for wiki_search / wiki_query.
+# Without these, a single large file (e.g. a 100MB Obsidian transcript
+# with embedded video, or a malicious user-supplied .md) gets fully
+# read into memory by every MCP call. _SEARCH_HIT_CAP capped output
+# only — the loop still read every byte of every file. Cap inputs
+# explicitly so the worst-case is bounded regardless of corpus shape.
+_MCP_SCAN_PER_FILE_BYTES = 4 * 1024 * 1024   # 4 MiB / file
+_MCP_SCAN_AGGREGATE_BYTES = 50 * 1024 * 1024  # 50 MiB / call
+
+
+def _read_capped(p: Path, *, remaining_budget: int) -> tuple[str, int]:
+    """Read up to min(per-file cap, remaining_budget) bytes of `p`.
+
+    Returns (text, bytes_consumed). ``bytes_consumed == 0`` signals
+    the file was skipped entirely (over-budget or unreadable). Caller
+    decrements the aggregate budget by ``bytes_consumed`` and bails
+    when it hits zero.
+    """
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return "", 0
+    cap = min(_MCP_SCAN_PER_FILE_BYTES, max(0, remaining_budget))
+    if size > _MCP_SCAN_PER_FILE_BYTES:
+        # Skip the file entirely — do not partial-read. The truncation
+        # would slice query tokens across the boundary and produce
+        # confusing partial hits.
+        return "", 0
+    if cap <= 0:
+        return "", 0
+    try:
+        with p.open("rb") as f:
+            raw = f.read(cap + 1)
+    except OSError:
+        return "", 0
+    # If we read more than cap, the file grew between stat and read.
+    # Trust the stat-based skip above; truncate defensively here.
+    if len(raw) > cap:
+        return "", 0
+    try:
+        return raw.decode("utf-8", errors="replace"), len(raw)
+    except Exception:
+        return "", 0
+
+
 def tool_wiki_search(args: dict[str, Any]) -> dict[str, Any]:
+    # #413: the old loop had three nested terminators (`for line`,
+    # `for p`, `for root`) but only the inner two had a 200-cap break.
+    # With include_raw=True the cap was effectively per-root, so we
+    # could return up to 400 hits when the schema implies 200, while
+    # still scanning the entire raw/ tree after the wiki/ tree had
+    # already capped. Restructured as a single iterator with one
+    # termination check, and the search term is lowercased once.
     term = (args.get("term") or "").strip()
     include_raw = bool(args.get("include_raw", False))
     if not term:
@@ -371,17 +513,32 @@ def tool_wiki_search(args: dict[str, Any]) -> dict[str, Any]:
     if include_raw:
         roots.append(REPO_ROOT / "raw" / "sessions")
 
+    term_lower = term.lower()
     hits: list[dict[str, Any]] = []
+    truncated = False
+    # #483: aggregate byte budget across all roots, plus per-file cap
+    # via _read_capped. Output cap (_SEARCH_HIT_CAP) is unchanged.
+    budget = _MCP_SCAN_AGGREGATE_BYTES
+    skipped_oversize = 0
     for root in roots:
+        if truncated or budget <= 0:
+            break
         if not root.exists():
             continue
         for p in root.rglob("*.md"):
-            try:
-                text = p.read_text(encoding="utf-8")
-            except OSError:
+            if truncated or budget <= 0:
+                break
+            text, consumed = _read_capped(p, remaining_budget=budget)
+            if consumed == 0:
+                try:
+                    if p.stat().st_size > _MCP_SCAN_PER_FILE_BYTES:
+                        skipped_oversize += 1
+                except OSError:
+                    pass
                 continue
+            budget -= consumed
             for i, line in enumerate(text.splitlines(), start=1):
-                if term in line or term.lower() in line.lower():
+                if term_lower in line.lower():
                     hits.append(
                         {
                             "path": str(p.relative_to(REPO_ROOT)),
@@ -389,11 +546,17 @@ def tool_wiki_search(args: dict[str, Any]) -> dict[str, Any]:
                             "text": line.strip()[:200],
                         }
                     )
-                    if len(hits) >= 200:
+                    if len(hits) >= _SEARCH_HIT_CAP:
+                        truncated = True
                         break
-            if len(hits) >= 200:
-                break
-    return _ok(json.dumps({"term": term, "matches": hits, "truncated": len(hits) >= 200}, indent=2))
+    # #483: surface skipped-oversize count so callers know we didn't
+    # silently miss content from huge files.
+    return _ok(json.dumps({
+        "term": term,
+        "matches": hits,
+        "truncated": truncated,
+        "skipped_oversize_files": skipped_oversize,
+    }, indent=2))
 
 
 def tool_wiki_list_sources(args: dict[str, Any]) -> dict[str, Any]:
@@ -428,6 +591,16 @@ def tool_wiki_read_page(args: dict[str, Any]) -> dict[str, Any]:
     p = _safe_path(rel)
     if p is None:
         return _err(f"path escapes repo root: {rel!r}")
+    # #482: restrict to documented allowlist (wiki/, raw/, docs/,
+    # examples/, site/, plus README/CHANGELOG/etc. at the root).
+    # Reject .git/, .env, .llmwiki-state.json, node_modules, etc.
+    # even though they live under REPO_ROOT.
+    if not _is_read_page_allowed(p):
+        return _err(
+            f"path is outside the readable surface: {rel!r}. "
+            f"Allowed: {', '.join(_READ_PAGE_ALLOWED_DIRS)}/, "
+            f"plus {', '.join(sorted(_READ_PAGE_ALLOWED_ROOT_FILES))} at the root."
+        )
     if not p.exists():
         return _err(f"path does not exist: {rel}")
     if not p.is_file():
@@ -494,19 +667,57 @@ def tool_wiki_lint(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def tool_wiki_sync(args: dict[str, Any]) -> dict[str, Any]:
-    dry_run = bool(args.get("dry_run", False))
+    # #sec-12 (#556): default to dry_run=true. Real writes require BOTH
+    # dry_run=false AND confirm=true. Either flag missing = dry-run.
+    dry_run = bool(args.get("dry_run", True))
+    confirm = bool(args.get("confirm", False))
+    if not dry_run and not confirm:
+        # Caller asked for live sync without confirmation — downgrade to
+        # dry-run + tell them why. Better than silently mutating raw/.
+        dry_run = True
     cmd = [sys.executable, "-m", "llmwiki", "sync"]
     if dry_run:
         cmd.append("--dry-run")
+    # #py-h1 (#582): capture_output=True buffers all stdout in RAM. A
+    # very chatty sync (thousands of sessions) can blow past the
+    # 1 GB-ish ceiling Python can hold + grow before OOM-killing.
+    # Stream stdout via Popen + readline, capping the captured tail
+    # to a fixed byte budget so the MCP response stays bounded.
+    OUTPUT_CAP_BYTES = 256 * 1024  # 256 KB tail in the response
+    captured: list[str] = []
+    captured_bytes = 0
+    truncated = False
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=120,
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
+        # Read line-by-line so a hung child doesn't block forever — the
+        # outer try wraps a 120s timeout via proc.wait below.
+        assert proc.stdout is not None
+        deadline = time.time() + 120.0
+        for line in proc.stdout:
+            if captured_bytes < OUTPUT_CAP_BYTES:
+                captured.append(line)
+                captured_bytes += len(line)
+            else:
+                truncated = True
+            if time.time() > deadline:
+                proc.kill()
+                return _err("sync timed out after 120s")
+        proc.wait(timeout=max(0.1, deadline - time.time()))
     except subprocess.TimeoutExpired:
+        try: proc.kill()  # type: ignore[name-defined]
+        except Exception: pass
         return _err("sync timed out after 120s")
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         return _err(f"sync failed: {e}")
-    output = result.stdout + (f"\n--- stderr ---\n{result.stderr}" if result.stderr else "")
+    output = "".join(captured)
+    if truncated:
+        output += f"\n[output truncated at {OUTPUT_CAP_BYTES // 1024} KB]"
     return _ok(output or "(no output)")
 
 

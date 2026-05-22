@@ -12,12 +12,13 @@ The `--synthesize` flag on `llmwiki build` calls the local `claude` binary on yo
 |---|---|---|
 | Claude Code | `claude_code` | Production |
 | Codex CLI | `codex_cli` | Production |
-| GitHub Copilot Chat | `copilot-chat` | Production |
-| GitHub Copilot CLI | `copilot-cli` | Production |
+| GitHub Copilot Chat | `copilot_chat` | Production |
+| GitHub Copilot CLI | `copilot_cli` | Production |
 | Cursor | `cursor` | Scaffold (SQLite parser in progress) |
 | Gemini CLI | `gemini_cli` | Scaffold (schema TBC) |
 | Obsidian | `obsidian` | Production (vault as input source) |
-| PDF | `pdf` | Production (any PDF dropped into raw/) |
+
+> The PDF adapter that used to live here was removed in the simplification sweep.
 
 See [multi-agent-setup.md](multi-agent-setup.md) for per-agent details.
 
@@ -94,8 +95,8 @@ Yes. llmwiki supports several export formats:
 - `llmwiki export jsonld` -- JSON-LD knowledge graph
 - `llmwiki export sitemap` -- XML sitemap
 - `llmwiki export rss` -- RSS feed
-- `llmwiki export-obsidian` -- export to an Obsidian vault
-- `llmwiki export-qmd` -- export as a qmd collection
-- `llmwiki export-marp` -- generate Marp slide decks
+- `llmwiki sync --vault PATH` -- write through to an Obsidian vault as part of the regular sync (replaces the removed `export-obsidian` subcommand)
 
 Run `llmwiki export all` to generate everything at once.
+
+> The `export-obsidian`, `export-qmd`, `export-marp`, and `watch` subcommands were removed in v1.2.0. See `docs/UPGRADING.md` for the migration path.

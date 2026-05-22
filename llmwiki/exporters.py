@@ -31,9 +31,20 @@ from llmwiki import REPO_ROOT, __version__
 
 
 def _plain_text(markdown_body: str) -> str:
-    """Strip markdown to plain text (for llms-full and per-page .txt)."""
+    """Strip markdown to plain text (for llms-full and per-page .txt).
+
+    Fenced code blocks are unwrapped (fences removed, body preserved) so that
+    code in transcripts survives into AI-consumable exports. Previously this
+    replaced the entire block with a single space, which destroyed the most
+    valuable content in coding session transcripts.
+    """
     text = markdown_body
-    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(
+        r"```[a-zA-Z0-9_+\-.]*\n?(.*?)```",
+        lambda m: m.group(1).rstrip() + "\n",
+        text,
+        flags=re.DOTALL,
+    )
     text = re.sub(r"`([^`]*)`", r"\1", text)
     text = re.sub(r"\[([^\]]*)\]\([^\)]*\)", r"\1", text)
     text = re.sub(r"\[\[([^\]]*)\]\]", r"\1", text)
@@ -55,6 +66,41 @@ def _page_id(project: str, slug: str) -> str:
     """Stable content-addressable ID for a page. Used in JSON-LD @id and
     cross-reference tables."""
     return f"{project}/{slug}"
+
+
+def _as_int(value: Any) -> Any:
+    """Coerce frontmatter scalars to int where possible; leave other types alone."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if s.lstrip("-").isdigit():
+            try:
+                return int(s)
+            except ValueError:
+                return value
+    return value
+
+
+def _as_bool(value: Any) -> Any:
+    """Coerce frontmatter scalars to bool. Strings like 'false'/'0' map to False.
+
+    Critical because raw YAML-loaded strings like ``"false"`` are truthy in both
+    Python and JavaScript, which silently flips downstream boolean checks.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "1", "yes"):
+            return True
+        if s in ("false", "0", "no", ""):
+            return False
+    return bool(value)
 
 
 # ─── per-page sibling files (A3 + A4) ────────────────────────────────────
@@ -87,14 +133,17 @@ def write_page_json(
         "cwd": meta.get("cwd"),
         "git_branch": meta.get("gitBranch"),
         "permission_mode": meta.get("permissionMode"),
-        "user_messages": meta.get("user_messages"),
-        "tool_calls": meta.get("tool_calls"),
+        "user_messages": _as_int(meta.get("user_messages")),
+        "tool_calls": _as_int(meta.get("tool_calls")),
         "tools_used": meta.get("tools_used"),
-        "is_subagent": meta.get("is_subagent"),
+        "is_subagent": _as_bool(meta.get("is_subagent")),
         "wikilinks_out": sorted(set(wikilinks_out)),
         "body_text": _plain_text(markdown_body),
         "sha256": _sha256_16(markdown_body),
-        "source_url": f"sessions/{meta.get('project', '')}/{meta.get('slug', '')}.html",
+        # #415: source_url must match build.py's session HTML path which uses
+        # page_html_path.stem (carries date prefix + any disambig hash),
+        # NOT the bare slug field.
+        "source_url": f"sessions/{meta.get('project', '')}/{page_html_path.stem}.html",
     }
     # Drop None values so the JSON is clean
     data = {k: v for k, v in data.items() if v is not None}
@@ -259,14 +308,20 @@ def write_graph_jsonld(
     # Session nodes
     for p, meta, _body in sources:
         project = str(meta.get("project") or p.parent.name)
-        slug = str(meta.get("slug", p.stem))
+        # #415: build.py writes session HTML at sessions/<project>/<path.stem>.html
+        # — exporters MUST use the same path.stem for URL composition, not the
+        # slug field. The slug is the bare slug; the on-disk stem includes the
+        # date prefix (and any --<hash> disambiguator from collision retry).
+        # Mismatch was producing dead links in JSON-LD / sitemap / RSS.
+        url_stem = p.stem
+        slug = str(meta.get("slug", p.stem))  # used only for display @id
         node = {
-            "@id": f"session/{_page_id(project, slug)}",
+            "@id": f"session/{_page_id(project, url_stem)}",
             "@type": "CreativeWork",
             "name": meta.get("title") or slug,
             "dateCreated": meta.get("started") or meta.get("date"),
             "isPartOf": {"@id": f"project/{project}"},
-            "url": f"sessions/{project}/{slug}.html",
+            "url": f"sessions/{project}/{url_stem}.html",
         }
         if meta.get("model"):
             node["creator"] = {"@type": "SoftwareApplication", "name": str(meta["model"])}
@@ -276,8 +331,20 @@ def write_graph_jsonld(
         "@context": "https://schema.org",
         "@graph": graph,
     }
+    # #sec-10 (#554): graph.jsonld is sometimes embedded inside a
+    # `<script type="application/ld+json">` block on third-party pages
+    # that consume our schema.org graph. A wiki page title containing
+    # the literal `</script>` would then close the script block early,
+    # opening up an XSS via attacker-controlled content downstream.
+    # Apply the same `<\/` defense graph.py uses for its own embedded
+    # payload.
+    payload = json.dumps(doc, indent=2, ensure_ascii=False)
+    # Post-final-review: HTML parsers are case-insensitive on tag names,
+    # so `</SCRIPT>` and `</Script>` would still close an embedded
+    # script block. Match all variants. Same fix in graph.py.
+    payload = re.sub(r"</script\b", "<\\/script", payload, flags=re.IGNORECASE)
     out_path = out_dir / "graph.jsonld"
-    out_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    out_path.write_text(payload, encoding="utf-8")
     return out_path
 
 
@@ -314,10 +381,10 @@ def write_sitemap(
         lines.append(url(f"projects/{project}.html", priority="0.8"))
     for p, meta, _ in sources:
         project = str(meta.get("project") or p.parent.name)
-        slug = str(meta.get("slug", p.stem))
-        started = str(meta.get("started", ""))
-        lastmod = started.split("T")[0] if started else None
-        lines.append(url(f"sessions/{project}/{slug}.html", lastmod=lastmod, priority="0.6"))
+        # #415: use path.stem for URL — matches build.py's session HTML output path
+        lines.append(url(f"sessions/{project}/{p.stem}.html",
+                         lastmod=(str(meta.get("started", "")).split("T")[0] or None),
+                         priority="0.6"))
     lines.append("</urlset>")
     out_path = out_dir / "sitemap.xml"
     out_path.write_text("\n".join(lines), encoding="utf-8")
@@ -354,7 +421,8 @@ def write_rss(
         project = str(meta.get("project") or p.parent.name)
         slug = str(meta.get("slug", p.stem))
         title = str(meta.get("title", slug))
-        href_rel = f"sessions/{project}/{slug}.html"
+        # #415: use path.stem for URL — matches build.py's session HTML output path
+        href_rel = f"sessions/{project}/{p.stem}.html"
         link = f"{site_base_url.rstrip('/')}/{href_rel}" if site_base_url else href_rel
         summary = _plain_text(body)[:300]
         started = str(meta.get("started", ""))

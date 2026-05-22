@@ -54,6 +54,7 @@ from llmwiki.log_reader import recent_events as _recent_log_events
 from llmwiki.context_md import is_context_file
 from llmwiki.freshness import freshness_badge, load_freshness_config
 from llmwiki.project_topics import (
+    extract_session_topics,
     get_project_topics,
     load_project_profile,
     render_topic_chips,
@@ -81,33 +82,80 @@ PROJECTS_META_DIR = REPO_ROOT / "wiki" / "projects"
 
 # ─── frontmatter ───────────────────────────────────────────────────────────
 
-_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
-
-
-def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    m = _FRONTMATTER_RE.match(text)
-    if not m:
-        return {}, text
-    raw, body = m.group(1), m.group(2)
-    meta: dict[str, Any] = {}
-    for line in raw.splitlines():
-        if ":" not in line:
-            continue
-        k, _, v = line.partition(":")
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-            v = v[1:-1]
-        if v.startswith("[") and v.endswith("]"):
-            inner = v[1:-1].strip()
-            meta[k.strip()] = (
-                [x.strip() for x in inner.split(",") if x.strip()] if inner else []
-            )
-        else:
-            meta[k.strip()] = v
-    return meta, body
+# #409 / #423: build.py used to ship a divergent regex (LF-only, no BOM
+# handling, simpler list parser) which silently dropped frontmatter on
+# Windows-authored files. Unified to the canonical parser in
+# `_frontmatter.py`. Re-exported under the historical name so external
+# consumers (and `tests/test_render_split.py`) keep working.
+from llmwiki._frontmatter import (  # noqa: E402
+    _FRONTMATTER_RE,
+    parse_frontmatter,
+)
 
 
 # ─── discovery ─────────────────────────────────────────────────────────────
+
+
+# #405 path-traversal guard. Site paths are composed by joining `out_dir`
+# with `project_slug` and other slug values from frontmatter. A poisoned
+# `project: ../../etc/passwd` would otherwise write outside `out_dir`.
+_SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe_slug(value: str | None, *, fallback: str = "_unknown") -> str:
+    """Return a path-safe single-segment slug.
+
+    Rejects empty values, traversal segments (``..``), absolute paths
+    (leading ``/`` or backslash), null bytes, and anything containing
+    characters outside ``[A-Za-z0-9._-]``. Falls back to ``fallback`` so
+    the build keeps going on poisoned frontmatter — the offending
+    session lands under a clearly abnormal slug rather than escaping
+    ``out_dir``.
+    """
+    if not value:
+        return fallback
+    s = str(value).strip()
+    # Strip surrounding quotes leaked from naive YAML parsers.
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1]
+    if not s or s in (".", ".."):
+        return fallback
+    if "/" in s or "\\" in s or "\x00" in s:
+        return fallback
+    if not _SAFE_SLUG_RE.match(s):
+        return fallback
+    return s
+
+
+def _is_subagent(meta: dict[str, Any], path: Path) -> bool:
+    """Return True iff a session is a sub-agent run (#492 / #406).
+
+    Prefers the adapter-written ``is_subagent`` frontmatter field
+    (canonical contract since #406). Falls back to the legacy
+    ``"subagent" in path.name`` substring check ONLY if the field is
+    missing — needed to keep pre-#406 raw files classified correctly
+    until they're re-synced.
+
+    Accepts the field as either a real bool or one of the
+    case-insensitive strings ``"true"`` / ``"false"`` since
+    frontmatter parsers historically coerced inconsistently.
+    """
+    raw = meta.get("is_subagent")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("true", "yes", "1"):
+            return True
+        if s in ("false", "no", "0"):
+            return False
+    # Field absent or unrecognised — fall back to the legacy heuristic
+    # so pre-#406 raw files (no is_subagent field) still get the right
+    # answer. The renderer renames sub-agent slugs to
+    # `<slug>-subagent-<id>`, so the substring match is correct on
+    # canonically-renamed files even when meta is missing.
+    return "subagent" in path.name
+
 
 def discover_sources(root: Path) -> list[tuple[Path, dict[str, Any], str]]:
     out: list[tuple[Path, dict[str, Any], str]] = []
@@ -124,6 +172,15 @@ def discover_sources(root: Path) -> list[tuple[Path, dict[str, Any], str]]:
         except OSError:
             continue
         meta, body = parse_frontmatter(text)
+        # #405: sanitize the frontmatter values that compose output paths.
+        # Original values stay available via meta.get(); the *_safe_*
+        # versions are what every path-composition site downstream uses.
+        meta["project"] = _safe_slug(
+            meta.get("project") or p.parent.name,
+            fallback=_safe_slug(p.parent.name, fallback="_unknown"),
+        )
+        if "slug" in meta:
+            meta["slug"] = _safe_slug(meta["slug"], fallback=p.stem)
         out.append((p, meta, body))
     return out
 
@@ -138,6 +195,144 @@ def group_by_project(
     for k in g:
         g[k].sort(key=lambda t: str(t[1].get("started", t[0].name)))
     return g
+
+
+_SLUG_SPLIT_RE = re.compile(r"[-_]+")
+
+
+def _humanize_slug(slug: str) -> str:
+    """Turn a kebab/snake-case slug into a human-readable title.
+
+    `my-cool-project` → `My Cool Project`. Single-letter parts are
+    upper-cased the same way as multi-letter parts. Empty / whitespace
+    input returns the original (callers handle the empty case).
+    """
+    parts = [p for p in _SLUG_SPLIT_RE.split(slug.strip()) if p]
+    if not parts:
+        return slug.strip()
+    return " ".join(p[:1].upper() + p[1:] for p in parts)
+
+
+def _derive_stub_description(
+    sessions: list[tuple[Path, dict[str, Any], str]],
+) -> str:
+    """Pick a sensible description from the most-recent session.
+
+    Prefers an explicit `summary` (truncated to ~140 chars), then the
+    humanised session slug, then empty. `sessions` arrives sorted oldest
+    → newest by `discover_sources`/grouping, so we walk the tail.
+    """
+    for _path, meta, _body in reversed(sessions):
+        summary = meta.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            text = summary.strip().splitlines()[0].strip()
+            if len(text) > 140:
+                text = text[:137].rstrip() + "..."
+            return text
+        raw_slug = meta.get("slug")
+        if isinstance(raw_slug, str) and raw_slug.strip():
+            humanised = _humanize_slug(raw_slug)
+            if humanised:
+                return humanised
+    return ""
+
+
+def _derive_stub_topics(
+    sessions: list[tuple[Path, dict[str, Any], str]],
+    max_topics: int = 6,
+) -> list[str]:
+    """Aggregate topics from session frontmatter, then `tools_used` as a
+    secondary source. Uses `extract_session_topics` for the tags path so
+    the noise filter stays in sync with `project_topics.py`. Falls back
+    to `min_count=1` because most projects have only a few sessions and
+    the `min_count=2` default in `extract_session_topics` would suppress
+    nearly everything at seed time. Returns at most `max_topics` topics.
+    """
+    metas = [meta for _path, meta, _body in sessions]
+    topics = extract_session_topics(metas, max_topics=max_topics, min_count=1)
+    if topics:
+        return topics
+    # Fallback: tools_used aggregation (filtered by the same noise set).
+    from llmwiki.project_topics import _NOISE_TAGS
+    counts: dict[str, int] = {}
+    for meta in metas:
+        raw = meta.get("tools_used")
+        if isinstance(raw, list):
+            items = raw
+        elif isinstance(raw, dict):
+            items = list(raw.keys())
+        else:
+            items = []
+        for item in items:
+            tag = str(item).strip().lower()
+            if tag and tag not in _NOISE_TAGS:
+                counts[tag] = counts.get(tag, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [tag for tag, _ in ordered[:max_topics]]
+
+
+def _format_topics_yaml(topics: list[str]) -> str:
+    """Inline-list YAML serialisation that matches the parser in
+    `project_topics._parse_topics_frontmatter`."""
+    if not topics:
+        return "[]"
+    return "[" + ", ".join(topics) + "]"
+
+
+def ensure_project_stubs(
+    groups: dict[str, list[tuple[Path, dict[str, Any], str]]],
+    meta_dir: Path,
+) -> list[Path]:
+    """Auto-seed ``wiki/projects/<slug>.md`` for any discovered project
+    that doesn't already have one (`issues-commands.md` I-12).
+
+    Without this, real projects render a bare hero — no description, no
+    topic chips, no homepage — because those fields come from a hand-
+    authored file that never gets created on sync. Seeding pre-populates
+    `topics:` from session tags/tools and `description:` from the most-
+    recent session's summary or slug, so every real project lights up the
+    moment its first session lands (closes #425). Existing hand-authored
+    files are never overwritten — only the absence of a file triggers a
+    write, so the user's edits always win.
+
+    Returns the list of stub paths actually written (empty if all project
+    metadata files already existed).
+    """
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for slug in sorted(groups):
+        target = meta_dir / f"{slug}.md"
+        if target.exists():
+            continue
+        sessions = groups[slug]
+        topics = _derive_stub_topics(sessions)
+        description = _derive_stub_description(sessions)
+        # Escape embedded double-quotes in description so the YAML stays
+        # valid — slugs/summaries from real sessions occasionally contain
+        # quotes (`"why didn't this work"`).
+        description_safe = description.replace("\\", "\\\\").replace('"', '\\"')
+        # #py-l8 (#606): drop f-prefix on lines that have no
+        # placeholders so ruff's F541 doesn't flag the file. Mixed
+        # f-/plain in a concatenation chain is fine.
+        stub = (
+            "---\n"
+            f'title: "{slug}"\n'
+            "type: entity\n"
+            "entity_type: project\n"
+            f"project: {slug}\n"
+            f"topics: {_format_topics_yaml(topics)}\n"
+            f'description: "{description_safe}"\n'
+            'homepage: ""\n'
+            "---\n\n"
+            f"# {slug}\n\n"
+            "*Auto-generated project stub. `topics` and `description` are "
+            "pre-filled from session metadata — edit any field above and "
+            "the build will pick it up. Fill in `homepage` to add a link "
+            "chip to the project hero.*\n"
+        )
+        target.write_text(stub, encoding="utf-8")
+        written.append(target)
+    return written
 
 
 # ─── markdown normaliser + renderer ───────────────────────────────────────
@@ -208,6 +403,12 @@ def normalize_markdown(body: str) -> str:
 # preserved because the regex only matches `<[letter]`, not `<!`, and
 # build.py emits an `<!-- llmwiki:metadata -->` comment that AI agents parse.
 _TAG_START_RE = re.compile(r"<(/?[A-Za-z][A-Za-z0-9:_-]*)")
+# #sec-13 (#557): also neutralise raw `<![CDATA[` blocks in prose. CDATA
+# isn't allowed in HTML but some browsers / parsers treat it as a
+# start-of-foreign-content marker; surfaces in MathML / SVG islands or
+# in legacy XHTML rendering paths. Escape the leading `<` so the
+# surrounding markdown processor doesn't pass it through as-is.
+_CDATA_START_RE = re.compile(r"<!\[CDATA\[")
 _INLINE_CODE_RE = re.compile(r"`[^`]*`")
 
 
@@ -229,6 +430,9 @@ class _EscapeRawHtmlPreprocessor(Preprocessor):
             rebuilt: list[str] = []
             for kind, part in parts:
                 if kind == "text":
+                    # #sec-13: neutralise CDATA markers BEFORE the tag-
+                    # start sub so we don't accidentally double-escape.
+                    part = _CDATA_START_RE.sub(r"&lt;![CDATA[", part)
                     rebuilt.append(_TAG_START_RE.sub(r"&lt;\1", part))
                 else:
                     rebuilt.append(part)
@@ -239,12 +443,33 @@ class _EscapeRawHtmlPreprocessor(Preprocessor):
 # #283: in-memory content-hash cache for md_to_html. Same markdown body
 # always produces the same HTML, and build steps call md_to_html on the
 # same boilerplate (e.g. `## Connections`) across hundreds of pages.
-# SHA-256 keyed + bounded by a size cap so repeated builds in the same
-# Python process (tests, watch mode, bulk exports) don't re-parse.
-_MD_CACHE: dict[str, str] = {}
+# blake2b(digest_size=8) keyed + bounded by a size cap so repeated
+# builds in the same Python process (tests, watch mode, bulk exports)
+# don't re-parse.
+#
+# #417: switched from SHA-256 hex (allocates 64-byte string per call)
+# to blake2b(digest_size=8) returning bytes. ~3× faster + 8× less
+# allocation per cache key on a 5000-page corpus. The 8-byte (64-bit)
+# digest gives a birthday-collision threshold around 4×10^9 entries —
+# the 4096-entry cap stays many orders of magnitude below that.
+_MD_CACHE: dict[bytes, str] = {}
+_PLAIN_CACHE: dict[bytes, str] = {}
 _MD_CACHE_MAX = 4096  # entries; ~20 MB ceiling at ~5 KB avg
 _md_cache_hits = 0
 _md_cache_misses = 0
+_plain_cache_hits = 0
+_plain_cache_misses = 0
+
+
+def _content_key(body: str) -> bytes:
+    """Compute the cache key for a markdown body (#417).
+
+    blake2b is significantly faster than SHA-256 for short strings,
+    and the 8-byte digest is enough headroom for the 4096-entry cap.
+    Bytes (not hex) avoids the encode-back-to-string allocation.
+    """
+    import hashlib as _hl
+    return _hl.blake2b(body.encode("utf-8"), digest_size=8).digest()
 
 
 def md_to_html_cache_stats() -> dict[str, int]:
@@ -253,37 +478,44 @@ def md_to_html_cache_stats() -> dict[str, int]:
         "hits": _md_cache_hits,
         "misses": _md_cache_misses,
         "size": len(_MD_CACHE),
+        "plain_hits": _plain_cache_hits,
+        "plain_misses": _plain_cache_misses,
+        "plain_size": len(_PLAIN_CACHE),
     }
 
 
 def md_to_html_cache_clear() -> None:
-    """Clear the md_to_html cache — used in tests to isolate runs."""
+    """Clear the md_to_html + md_to_plain caches (used in tests)."""
     global _md_cache_hits, _md_cache_misses
+    global _plain_cache_hits, _plain_cache_misses
     _MD_CACHE.clear()
+    _PLAIN_CACHE.clear()
     _md_cache_hits = 0
     _md_cache_misses = 0
+    _plain_cache_hits = 0
+    _plain_cache_misses = 0
+
+
+def _evict_first(cache: dict) -> None:
+    """FIFO-evict the oldest cache entry."""
+    try:
+        first_key = next(iter(cache))
+        del cache[first_key]
+    except StopIteration:
+        pass
 
 
 def md_to_html(body: str) -> str:
     global _md_cache_hits, _md_cache_misses
-    # Cache lookup — SHA-256 is fast enough (under ~200 ns per KB) and
-    # collision-free in practice for arbitrary-sized markdown blocks.
-    import hashlib as _hl
-    key = _hl.sha256(body.encode("utf-8")).hexdigest()
+    key = _content_key(body)
     cached = _MD_CACHE.get(key)
     if cached is not None:
         _md_cache_hits += 1
         return cached
     _md_cache_misses += 1
     result = _md_to_html_uncached(body)
-    # Simple bound — oldest-first eviction. Python dicts preserve
-    # insertion order, so popping the first key is FIFO.
     if len(_MD_CACHE) >= _MD_CACHE_MAX:
-        try:
-            first_key = next(iter(_MD_CACHE))
-            del _MD_CACHE[first_key]
-        except StopIteration:
-            pass
+        _evict_first(_MD_CACHE)
     _MD_CACHE[key] = result
     return result
 
@@ -297,7 +529,19 @@ def _md_to_html_uncached(body: str) -> str:
     # and auto-detection for untagged blocks.
     extensions = ["fenced_code", "tables", "toc", "sane_lists"]
     ext_configs: dict[str, dict[str, Any]] = {
-        "toc": {"permalink": True, "toc_depth": "2-3"},
+        # #646: drop `permalink: True`. The Python-Markdown TOC
+        # extension's permalink emits a `<a class="headerlink">¶</a>`
+        # next to every heading; the site CSS doesn't style
+        # `.headerlink` (only `.deep-link` is styled), so axe-core
+        # flags every one as a `link-in-text-block` violation
+        # (links that aren't visually distinguishable). The JS-
+        # driven `.deep-link` icon next to each heading (rendered by
+        # render/js.py) is the canonical deep-link affordance — it
+        # has CSS + hover state + aria-hidden treatment. Two emitters
+        # for the same job; the markdown one is the older one. Anchor
+        # targets (`<h2 id="...">`) still ship via toc — links to
+        # `#section-name` keep working.
+        "toc": {"toc_depth": "2-3"},
     }
     md = markdown.Markdown(extensions=extensions, extension_configs=ext_configs)
     # v0.5 (#74): escape raw HTML tags in prose so session content mentioning
@@ -312,7 +556,29 @@ def _md_to_html_uncached(body: str) -> str:
 
 
 def md_to_plain_text(body: str) -> str:
-    """Strip markdown to plain text for the search index."""
+    """Strip markdown to plain text for the search index.
+
+    #417: memoized on the same content key as md_to_html. The build
+    pipeline calls md_to_html and md_to_plain_text on the same body
+    repeatedly (per-page render + search-index extract + RSS summary
+    + .txt sibling). Sharing the key makes the second + third + …
+    calls free.
+    """
+    global _plain_cache_hits, _plain_cache_misses
+    key = _content_key(body)
+    cached = _PLAIN_CACHE.get(key)
+    if cached is not None:
+        _plain_cache_hits += 1
+        return cached
+    _plain_cache_misses += 1
+    result = _md_to_plain_text_uncached(body)
+    if len(_PLAIN_CACHE) >= _MD_CACHE_MAX:
+        _evict_first(_PLAIN_CACHE)
+    _PLAIN_CACHE[key] = result
+    return result
+
+
+def _md_to_plain_text_uncached(body: str) -> str:
     body = normalize_markdown(strip_leading_h1(body))
     # Remove code blocks (they're noisy in search)
     body = re.sub(r"```.*?```", " ", body, flags=re.DOTALL)
@@ -402,17 +668,42 @@ def _hljs_head_tags() -> str:
     )
 
 
-def page_head(title: str, description: str, css_prefix: str = "") -> str:
+_PRE_PAINT_THEME_SCRIPT = """  <script>
+    /* #458: read localStorage.llmwiki-theme BEFORE first paint so users
+       never see a flash of the wrong theme when navigating between pages.
+       Falls back to prefers-color-scheme, then dark. Mirrors the same
+       pre-paint pattern graph.html already uses (#477). */
+    (function () {
+      try {
+        var t = localStorage.getItem('llmwiki-theme');
+        if (t !== 'dark' && t !== 'light') {
+          t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+"""
+
+
+def page_head(title: str, description: str, css_prefix: str = "", lang: str = "en") -> str:
+    # #ui-m13 (#576): lang argument lets callers override the default
+    # `<html lang="en">` for translated docs (`docs/i18n/<locale>/`).
+    # See also page_head_article() which has the same parameter.
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="{html.escape(lang)}" dir="auto">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{html.escape(title)}</title>
   <meta name="description" content="{html.escape(description)}">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
+{_PRE_PAINT_THEME_SCRIPT}  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- #ui-m14 (#577): async-load Google Fonts via media="print" + onload swap so it doesn't render-block first paint. <noscript> fallback for JS-disabled users. -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
 {_hljs_head_tags()}  <link rel="stylesheet" href="{css_prefix}style.css">
 </head>
 <body>
@@ -428,9 +719,15 @@ def page_head_article(
     canonical: str = "",
     date: str = "",
     metadata_comment: str = "",
+    lang: str = "en",
 ) -> str:
     """v0.4: Extended page head for session (Article) pages with schema.org
-    microdata, canonical link, and an AI-readable metadata HTML comment."""
+    microdata, canonical link, and an AI-readable metadata HTML comment.
+
+    #ui-m13 (#576): `lang` arg lets translated docs override the
+    default `en`. `dir="auto"` lets the browser infer RTL/LTR per
+    paragraph for sessions whose body contains Arabic / Hebrew
+    transliterations or quotes."""
     canonical_tag = ""
     if canonical:
         canonical_tag = f'  <link rel="canonical" href="{html.escape(canonical)}">\n'
@@ -441,15 +738,17 @@ def page_head_article(
     if date:
         og_tags += f'  <meta property="article:published_time" content="{html.escape(date)}">\n'
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="{html.escape(lang)}" dir="auto">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{html.escape(title)}</title>
   <meta name="description" content="{html.escape(description)}">
-{canonical_tag}{og_tags}  <link rel="preconnect" href="https://fonts.googleapis.com">
+{_PRE_PAINT_THEME_SCRIPT}{canonical_tag}{og_tags}  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- #ui-m14 (#577): async-load Google Fonts via media="print" + onload swap so it doesn't render-block first paint. <noscript> fallback for JS-disabled users. -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
 {_hljs_head_tags()}  <link rel="stylesheet" href="{css_prefix}style.css">
 </head>
 <body>
@@ -491,12 +790,42 @@ def nav_bar(active: str, link_prefix: str = "") -> str:
         cls = ' class="active"' if key == active else ""
         return f'<a href="{link_prefix}{href}"{cls}>{label}</a>'
 
+    # #460: hamburger pattern for tablet/mobile (≤1023px). The desktop
+    # nav-links row is hidden below 1024 (CSS rule), so without this
+    # button the Graph / Docs / Changelog entries would be unreachable
+    # on mobile (the bottom nav only carries Home / Projects / Sessions).
+    # The drawer below mirrors the same 6 links vertically. JS in
+    # render/js.py wires aria-expanded, ESC-to-close, and focus return.
+    drawer_link = lambda href, label, key: (
+        f'  <a href="{link_prefix}{href}" class="nav-drawer-link'
+        + (' active' if key == active else '') + '">'
+        + label + '</a>'
+    )
+    # Post-review: dropped `role="menu"` + `aria-labelledby` — children
+    # are plain <a>, not role="menuitem", so screen readers were being
+    # told "press arrow keys" which did nothing. The drawer is a
+    # disclosure nav, not an ARIA menu. The hamburger's aria-controls
+    # already provides the trigger→drawer association; no role needed
+    # on the container.
+    nav_drawer_html = f"""<div id="nav-drawer" class="nav-drawer" hidden aria-label="Main navigation">
+{drawer_link("index.html", "Home", "home")}
+{drawer_link("projects/index.html", "Projects", "projects")}
+{drawer_link("sessions/index.html", "Sessions", "sessions")}
+{drawer_link("graph.html", "Graph", "graph")}
+{drawer_link("docs/index.html", "Docs", "docs")}
+{drawer_link("changelog.html", "Changelog", "changelog")}
+</div>"""
     return f"""<header class="nav">
   <div class="nav-inner">
     <a href="{link_prefix}index.html" class="nav-brand">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       LLM Wiki
     </a>
+    <button type="button" class="nav-hamburger" id="nav-hamburger"
+            aria-expanded="false" aria-controls="nav-drawer"
+            aria-label="Open navigation menu">
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <nav class="nav-links">
       {link("index.html", "Home", "home")}
       {link("projects/index.html", "Projects", "projects")}
@@ -504,17 +833,21 @@ def nav_bar(active: str, link_prefix: str = "") -> str:
       {link("graph.html", "Graph", "graph")}
       {link("docs/index.html", "Docs", "docs")}
       {link("changelog.html", "Changelog", "changelog")}
-      <button class="nav-search-btn" id="open-palette" aria-label="Open command palette">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <button class="nav-search-btn" id="open-palette"
+              aria-label="Open command palette"
+              aria-haspopup="dialog" aria-expanded="false" aria-controls="palette">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <span>Search</span>
         <kbd>⌘K</kbd>
       </button>
-      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode">
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      <button class="theme-toggle" id="theme-toggle"
+              aria-label="Toggle dark mode" aria-pressed="false">
+        <svg aria-hidden="true" class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg aria-hidden="true" class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
       </button>
     </nav>
   </div>
+  {nav_drawer_html}
 </header>
 """
 
@@ -553,32 +886,32 @@ def page_foot(js_prefix: str = "") -> str:
 </footer>
 <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
   <a href="{js_prefix}index.html" class="mbn-link" data-page="home">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
     <span>Home</span>
   </a>
   <a href="{js_prefix}projects/index.html" class="mbn-link" data-page="projects">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
     <span>Projects</span>
   </a>
   <a href="{js_prefix}sessions/index.html" class="mbn-link" data-page="sessions">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
     <span>Sessions</span>
   </a>
   <button type="button" class="mbn-link" id="mbn-search" aria-label="Search">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
     <span>Search</span>
   </button>
-  <button type="button" class="mbn-link" id="mbn-theme" aria-label="Toggle theme">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  <button type="button" class="mbn-link" id="mbn-theme" aria-label="Toggle theme" aria-pressed="false">
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     <span>Theme</span>
   </button>
 </nav>
-<div id="palette" class="palette" aria-hidden="true">
+<div id="palette" class="palette">
   <div class="palette-backdrop" id="palette-backdrop"></div>
   <div class="palette-modal" role="dialog" aria-modal="true" aria-label="Command palette">
     <div class="palette-header">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input type="text" id="palette-input" placeholder="Search… or type:session project:llm-wiki date:>2026-03 sort:date" autocomplete="off" spellcheck="false">
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="palette-input" aria-label="Search pages" placeholder="Search… or type:session project:llm-wiki date:>2026-03 sort:date" autocomplete="off" spellcheck="false">
       <kbd>ESC</kbd>
     </div>
     <ul class="palette-results" id="palette-results"></ul>
@@ -589,7 +922,7 @@ def page_foot(js_prefix: str = "") -> str:
     </div>
   </div>
 </div>
-<div id="help-dialog" class="help-dialog" aria-hidden="true">
+<div id="help-dialog" class="help-dialog">
   <div class="palette-backdrop" id="help-backdrop"></div>
   <div class="help-modal">
     <h2>Keyboard shortcuts</h2>
@@ -604,7 +937,7 @@ def page_foot(js_prefix: str = "") -> str:
       <tr><td><kbd>Esc</kbd></td><td>Close dialogs</td></tr>
     </table>
     <h3>Structured queries</h3>
-    <p class="muted" style="font-size: 0.82rem; margin: 4px 0 8px;">Mix key:value filters with free text in the palette:</p>
+    <p class="muted help-dialog-hint">Mix key:value filters with free text in the palette:</p>
     <table>
       <tr><td><code>type:session</code></td><td>Only session pages</td></tr>
       <tr><td><code>project:llm-wiki</code></td><td>Filter by project name (substring)</td></tr>
@@ -614,7 +947,7 @@ def page_foot(js_prefix: str = "") -> str:
       <tr><td><code>tags:rust</code></td><td>Pages mentioning a tag/topic</td></tr>
       <tr><td><code>sort:date</code></td><td>Sort results by date (newest first)</td></tr>
     </table>
-    <p class="muted" style="font-size: 0.82rem; margin-top: 6px;">Example: <code>type:session project:llm-wiki date:&gt;2026-04 sort:date</code></p>
+    <p class="muted help-dialog-example">Example: <code>type:session project:llm-wiki date:&gt;2026-04 sort:date</code></p>
     <button class="btn" id="help-close">Close</button>
   </div>
 </div>
@@ -642,6 +975,16 @@ def page_foot(js_prefix: str = "") -> str:
 
 
 # ─── page renderers ────────────────────────────────────────────────────────
+
+def _pluralize(n: int, singular: str, plural: str | None = None) -> str:
+    """Return ``"1 session"`` for n=1, ``"3 sessions"`` for n=3.
+
+    Closes #387 U7. The hero subtitle and any other count-bearing
+    user-facing string should never read as ``"1 sessions"``."""
+    if plural is None:
+        plural = singular + "s"
+    return f"{n} {singular if n == 1 else plural}"
+
 
 def calc_reading_time(body: str, wpm: int = 225) -> int:
     """Estimate reading time in minutes from a markdown body."""
@@ -739,7 +1082,7 @@ def render_session(
     html_stem = path.stem
     raw_md_path = f"../../sources/{project_slug}/{path.name}"
     actions_html = f"""<div class="session-actions">
-  <button class="btn btn-primary" onclick="copyMarkdown(this)">Copy as markdown</button>
+  <button class="btn btn-primary" type="button" aria-label="Copy session content as markdown" title="Copy as markdown" onclick="copyMarkdown(this)">Copy as markdown</button>
   <a class="btn" href="../../projects/{html.escape(project_slug)}.html">← {html.escape(project_slug)}</a>
   <a class="btn" href="{html.escape(raw_md_path)}" download>Download .md</a>
   <a class="btn" href="{html.escape(html_stem + '.txt')}" title="plain-text sibling for AI agents">.txt</a>
@@ -773,6 +1116,13 @@ def render_session(
         )
         + nav_bar("sessions", link_prefix="../../")
         + hero(str(title_raw), meta_strip, size="hero-sm", subtitle_is_html=True)
+        # #471: human-readable description rendered as a subtitle below
+        # the hero, before the meta-strip. Only emit if frontmatter
+        # carries the field; older sessions skip this block cleanly.
+        + (
+            f'<div class="container session-description"><p>{html.escape(str(meta["description"]))}</p></div>'
+            if meta.get("description") else ""
+        )
         + f'<section class="section">\n  <div class="container">\n{breadcrumbs}\n{tools_preview}\n{actions_html}\n{tool_chart_block}\n{token_card_block}\n    <article class="content" itemscope itemtype="https://schema.org/Article">\n'
         + f'<meta itemprop="headline" content="{html.escape(str(title_raw))}">\n'
         + f'<meta itemprop="datePublished" content="{html.escape(str(meta.get("started") or date))}">\n'
@@ -793,7 +1143,7 @@ def render_project_page(
     sessions: list[tuple[Path, dict[str, Any], str]],
     out_dir: Path,
 ) -> Path:
-    main_sessions = [s for s in sessions if "subagent" not in s[0].name]
+    main_sessions = [s for s in sessions if not _is_subagent(s[1], s[0])]
     subagent_sessions = [s for s in sessions if s not in main_sessions]
 
     def card(p: Path, meta: dict[str, Any]) -> str:
@@ -953,7 +1303,7 @@ def render_projects_index(
 ) -> Path:
     cards = []
     for project, sessions in sorted(groups.items(), key=lambda x: -len(x[1])):
-        main_count = sum(1 for p, _, _ in sessions if "subagent" not in p.name)
+        main_count = sum(1 for p, m, _ in sessions if not _is_subagent(m, p))
         sub_count = len(sessions) - main_count
         # Freshness reflects the newest session in the project.
         newest_meta = max(
@@ -988,7 +1338,7 @@ def render_projects_index(
     page = (
         page_head("Projects — LLM Wiki", "All projects with Claude Code session history", css_prefix="../")
         + nav_bar("projects", link_prefix="../")
-        + hero("Projects", f"{len(groups)} projects")
+        + hero("Projects", _pluralize(len(groups), "project"))
         + body
         + page_foot(js_prefix="../")
     )
@@ -1016,16 +1366,32 @@ def render_sessions_index(
         # Strip "Session: " prefix for cleaner display
         if title.startswith("Session: "):
             title = title[9:]
+        # #452: titles auto-generated from session frontmatter follow the
+        # pattern "<slug> — <date>" but the table already has a dedicated
+        # Date column, so the trailing date is redundant. Strip it so the
+        # Session cell shows just the slug (or whatever custom title the
+        # user gave) and the Date column carries the date alone.
+        date = meta.get("date", "")
+        if date and title.endswith(f" — {date}"):
+            title = title[: -(len(date) + 3)]
         # Truncate long titles for table display
         display_title = title[:70] + "..." if len(title) > 70 else title
-        date = meta.get("date", "")
+        # #471: human-readable description from the first user turn —
+        # if frontmatter carries one, render it as a small muted line
+        # below the slug. Falls back to no second line for older
+        # sessions without the field.
+        description = str(meta.get("description") or "").strip()
+        desc_line = (
+            f'<div class="session-cell-desc muted">{html.escape(description)}</div>'
+            if description else ""
+        )
         model = meta.get("model", "")
         umsgs = meta.get("user_messages", "")
         tcalls = meta.get("tool_calls", "")
         href = f"{project}/{p.stem}.html"
         rows.append(
             f"""        <tr data-project="{html.escape(str(project))}" data-model="{html.escape(str(model))}" data-date="{html.escape(str(date))}" data-slug="{html.escape(str(slug))}">
-          <td><a href="{html.escape(str(href))}">{html.escape(str(display_title))}</a></td>
+          <td><a href="{html.escape(str(href))}">{html.escape(str(display_title))}</a>{desc_line}</td>
           <td>{render_agent_badge(meta)}</td>
           <td><a href="../projects/{html.escape(str(project))}.html">{html.escape(str(project))}</a></td>
           <td>{html.escape(str(date))}</td>
@@ -1074,12 +1440,23 @@ def render_sessions_index(
       <label>To
         <input type="date" id="filter-date-to">
       </label>
-      <input type="text" id="filter-text" placeholder="Filter by slug…">
+      <label>Slug
+        <input type="text" id="filter-text" placeholder="part of slug…">
+      </label>
       <button class="btn" id="filter-clear">Clear</button>
       <span class="filter-count muted" id="filter-count"></span>
     </div>
     <div class="table-wrap">
     <table class="sessions-table">
+      <colgroup>
+        <col style="width: 30%">
+        <col style="width: 8%">
+        <col style="width: 16%">
+        <col style="width: 10%">
+        <col style="width: 22%">
+        <col style="width: 7%">
+        <col style="width: 7%">
+      </colgroup>
       <thead>
         <tr><th>Session</th><th>Agent</th><th>Project</th><th>Date</th><th>Model</th><th>Msgs</th><th>Tools</th></tr>
       </thead>
@@ -1096,7 +1473,7 @@ def render_sessions_index(
     page = (
         page_head("Sessions — LLM Wiki", "All Claude Code sessions, newest first", css_prefix="../")
         + nav_bar("sessions", link_prefix="../")
-        + hero("All sessions", f"{len(sources)} sessions total")
+        + hero("All sessions", _pluralize(len(sources), "session") + " total")
         + body
         + page_foot(js_prefix="../")
     )
@@ -1114,7 +1491,7 @@ def render_index(
     synthesis: Optional[str] = None,
 ) -> Path:
     total = len(all_sources)
-    mains = sum(1 for p, _, _ in all_sources if "subagent" not in p.name)
+    mains = sum(1 for p, m, _ in all_sources if not _is_subagent(m, p))
     subs = total - mains
 
     synth_block = ""
@@ -1167,7 +1544,7 @@ def render_index(
 
     cards = []
     for project, sessions in sorted(groups.items(), key=lambda x: -len(x[1])):
-        main_count = sum(1 for p, _, _ in sessions if "subagent" not in p.name)
+        main_count = sum(1 for p, m, _ in sessions if not _is_subagent(m, p))
         # Project topics — explicit profile in wiki/projects/<slug>.md
         # takes precedence, falls back to aggregated session tags with
         # noise filtered out. Rendered as chips below the card meta.
@@ -1175,10 +1552,32 @@ def render_index(
         topics = get_project_topics(PROJECTS_META_DIR, project, proj_metas)
         topics_html = render_topic_chips(topics, max_visible=4,
                                          classname="project-topics card-topics")
+        # #455: render the activity date range under the meta line so
+        # users can spot fresh vs stale projects without clicking. Pull
+        # `date:` from frontmatter (already YYYY-MM-DD strings); ignore
+        # missing/blank values; format as `2026-03-12 → 2026-04-01` for
+        # multi-day, just `2026-04-01` if first == last.
+        dates = sorted(
+            {str(m.get("date", "")) for _, m, _ in sessions if m.get("date")}
+        )
+        if dates:
+            if dates[0] == dates[-1]:
+                date_range_html = (
+                    f'<div class="card-date-range">{html.escape(dates[0])}</div>'
+                )
+            else:
+                date_range_html = (
+                    f'<div class="card-date-range">'
+                    f'{html.escape(dates[0])} → {html.escape(dates[-1])}'
+                    f'</div>'
+                )
+        else:
+            date_range_html = ""
         cards.append(
             f"""  <a class="card card-project" href="projects/{html.escape(project)}.html">
     <div class="card-title">{html.escape(project)}</div>
     <div class="card-meta">{main_count} main · {len(sessions) - main_count} sub-agent</div>
+    {date_range_html}
     {topics_html}
   </a>"""
         )
@@ -1202,7 +1601,7 @@ def render_index(
         + nav_bar("home", link_prefix="")
         + hero(
             "LLM Wiki",
-            f"{mains} main sessions · {subs} sub-agent runs · {len(groups)} projects",
+            f"{_pluralize(mains, 'main session')} · {_pluralize(subs, 'sub-agent run')} · {_pluralize(len(groups), 'project')}",
         )
         + synth_block
         + body
@@ -1269,6 +1668,46 @@ def _render_root_md_page(
         + page_foot(js_prefix="")
     )
     out_path = out_dir / out_name
+    out_path.write_text(page, encoding="utf-8")
+    return out_path
+
+
+def render_404(out_dir: Path) -> Path:
+    """Emit ``site/404.html`` with the standard site chrome and a "Page not
+    found" panel. Closes #387 U8 — without this, ``llmwiki serve`` falls
+    back to the stdlib ``http.server`` default 404 (an unstyled error string
+    with no nav). The page itself is not linked from the index, but
+    ``serve.py`` injects it as the body of every 404 response.
+    """
+    head = page_head(
+        title="Page not found · llmwiki",
+        description="The page you tried to open doesn't exist on this site.",
+    )
+    nav = nav_bar(active="")
+    foot = page_foot()
+    body = """<main id="main-content">
+<section class="hero">
+  <div class="container">
+    <h1>Page not found</h1>
+    <p class="hero-sub">The page you tried to open doesn't exist on this site. The link may be stale, the page may have been removed, or the URL may have a typo.</p>
+  </div>
+</section>
+<section class="section">
+  <div class="container">
+    <p>Try one of these:</p>
+    <ul class="not-found-links">
+      <li><a href="index.html">Home</a> — overview and recent activity</li>
+      <li><a href="projects/index.html">Projects</a> — every project with sessions</li>
+      <li><a href="sessions/index.html">Sessions</a> — every session, sortable + filterable</li>
+      <li><a href="changelog.html">Changelog</a> — what's shipped recently</li>
+    </ul>
+    <p class="muted">Or press <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> to open the command palette and search.</p>
+  </div>
+</section>
+</main>
+"""
+    page = head + nav + body + foot
+    out_path = out_dir / "404.html"
     out_path.write_text(page, encoding="utf-8")
     return out_path
 
@@ -1360,6 +1799,15 @@ def render_models_section(out_dir: Path) -> tuple[Optional[Path], int]:
     `wiki/entities/` directory OR no model pages there, we still write
     an empty-state index so the nav link doesn't 404.
     """
+    # Post-review: imports lazily so this function actually works the
+    # next time someone wires it from the CLI. Previously these names
+    # were referenced but never imported — function body was reachable
+    # but would crash with NameError on first call.
+    from llmwiki.models_page import (  # noqa: F401
+        discover_model_entities_with_meta,
+        render_models_index,
+        render_model_info_card,
+    )
     entities_dir = REPO_ROOT / "wiki" / "entities"
     entries_with_meta = discover_model_entities_with_meta(entities_dir)
     # Backwards-compatible list without meta for render_models_index.
@@ -1464,6 +1912,17 @@ def render_vs_section(
     `(index_path, pair_count)`. Always writes the index so the nav
     link resolves even when no entities exist.
     """
+    # Post-review: lazy imports so this function actually works the
+    # next time someone wires it. Previously these names were referenced
+    # but never imported — first call would have crashed with NameError.
+    from llmwiki.models_page import discover_model_entities  # noqa: F401
+    from llmwiki.compare import (  # noqa: F401
+        discover_user_overrides,
+        generate_pairs,
+        pair_slug,
+        render_comparison_body,
+        render_comparisons_index,
+    )
     entities_dir = REPO_ROOT / "wiki" / "entities"
     overrides_dir = REPO_ROOT / "wiki" / "vs"
     entries = discover_model_entities(entities_dir)
@@ -1715,13 +2174,101 @@ from llmwiki.render.js import JS  # noqa: F401 (re-exported)
 
 # ─── claude synthesis (optional) ───────────────────────────────────────────
 
+# #421: shell metacharacters that have no business in a path-to-an-
+# executable. We refuse paths containing any of these rather than
+# trying to escape them — the CLI argv is never shell-interpreted
+# (we use list-form subprocess.run), but the same path may end up in
+# user-facing logs, scripts, or future code paths that *do* interpolate.
+# Reject loudly to keep hygiene tight.
+# #sec-6 (#550): extended to reject NUL + control chars + unprintable
+# bytes. The original list caught the obvious shell-special characters;
+# control chars (0x00–0x1F minus tab) get rejected too because they
+# survive the rejection of `\n` and `\r` only by accident, and can
+# break log parsers / shell prompts in subtle ways.
+_PATH_SHELL_METACHARS = re.compile(r"[;&|`$<>\n\r\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _resolve_claude_path(claude_path: Optional[str]) -> Optional[Path]:
+    """Resolve and validate the ``--claude`` path (#421).
+
+    Returns ``None`` when:
+      - The path is empty or contains shell metacharacters (rejected loudly).
+      - ``shutil.which`` can't find the binary on PATH (when no path passed).
+      - The resolved path doesn't exist on disk.
+
+    Returns a ``Path`` when the binary is found and looks safe. Callers
+    should treat ``None`` as "skip synthesis" — the synth step is best-
+    effort and never fatal.
+    """
+    if claude_path:
+        # Reject explicit paths containing shell metacharacters even
+        # though argv is list-form — this keeps the path safe to log.
+        if _PATH_SHELL_METACHARS.search(claude_path):
+            print(
+                f"  warning: refusing claude path with shell metacharacters: "
+                f"{claude_path!r}",
+                file=sys.stderr,
+            )
+            return None
+        candidate = Path(claude_path)
+    else:
+        # No explicit path: use shutil.which so PATH-based lookups
+        # (homebrew, asdf, npm-global, Windows %PATH%) all just work.
+        import shutil as _shutil
+        found = _shutil.which("claude")
+        if not found:
+            return None
+        candidate = Path(found)
+    if not candidate.exists():
+        print(f"  warning: claude CLI not found at {candidate}", file=sys.stderr)
+        return None
+    return candidate
+
+
+# #486: validate slug shape before it lands in the synthesize_overview
+# prompt. Anything that doesn't match this is replaced by `_invalid_`.
+# - Length cap 80 chars (real slugs are far shorter)
+# - Charset: alphanumerics + `.`, `_`, `-` (no whitespace, no shell
+#   metachars, no NUL bytes, no unicode-confusable categories)
+_SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+# #486: cap the total prompt size sent to the claude CLI. 32 KB is well
+# inside any LLM's context, well inside macOS's ~256 KB argv limit, and
+# small enough that a malicious large slug list can't push the prompt
+# past the OS argv limit. (We also pass via stdin below so this is
+# defence-in-depth.)
+_MAX_OVERVIEW_PROMPT_BYTES = 32_000
+
+
+def _validate_overview_slug(s: Any) -> str:
+    """Return ``s`` if it's a safe slug, ``"_invalid_"`` otherwise.
+
+    #486: a malicious .jsonl could land arbitrary content in the
+    `slug` field of a session's frontmatter. That string then ends
+    up inside the prompt sent to the claude CLI for overview
+    synthesis. Without validation, an attacker-controlled slug could:
+    - inject prompt text ("ignore previous instructions, …")
+    - contain `\\x00` and crash subprocess.run with a ValueError
+    - balloon argv past the OS limit (~256 KB on macOS)
+    Replace anything sketchy with the literal `_invalid_` so the
+    prompt stays well-formed and the synthesis output stays
+    trustworthy.
+    """
+    if not isinstance(s, str):
+        return "_invalid_"
+    if not _SAFE_SLUG_RE.match(s):
+        return "_invalid_"
+    return s
+
+
 def synthesize_overview(
     groups: dict[str, list[tuple[Path, dict[str, Any], str]]],
     claude_path: str,
 ) -> Optional[str]:
-    if not Path(claude_path).exists():
-        print(f"  warning: claude CLI not found at {claude_path}", file=sys.stderr)
+    resolved = _resolve_claude_path(claude_path)
+    if resolved is None:
         return None
+    claude_path = str(resolved)
 
     lines: list[str] = [
         "You are writing a short (200-300 word) overview for a personal knowledge-base",
@@ -1739,23 +2286,42 @@ def synthesize_overview(
     for project, sessions in sorted(groups.items()):
         brief[project] = {
             "session_count": len(sessions),
-            "main_sessions": sum(1 for p, _, _ in sessions if "subagent" not in p.name),
+            "main_sessions": sum(1 for p, m, _ in sessions if not _is_subagent(m, p)),
             "dates": sorted({str(m.get("date", "")) for _, m, _ in sessions if m.get("date")}),
             "models": sorted({str(m.get("model", "")) for _, m, _ in sessions if m.get("model")}),
-            "slugs": [str(m.get("slug", p.stem)) for p, m, _ in sessions[:8]],
+            # #486: every slug filtered through the safe-slug regex so
+            # malicious .jsonl content can't prompt-inject or crash
+            # subprocess.run via embedded NUL bytes.
+            "slugs": [_validate_overview_slug(m.get("slug", p.stem)) for p, m, _ in sessions[:8]],
         }
     prompt = "\n".join(lines) + json.dumps(brief, indent=2)
 
+    # #486: cap total prompt size so a malicious large slug list can't
+    # push the prompt past the OS argv limit. Truncation is fine here —
+    # the LLM gets the head of the JSON and produces a partial overview;
+    # better than a build that silently fails.
+    if len(prompt.encode("utf-8")) > _MAX_OVERVIEW_PROMPT_BYTES:
+        prompt = prompt.encode("utf-8")[:_MAX_OVERVIEW_PROMPT_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+
     print("  calling claude CLI for overview synthesis…")
     try:
+        # #486: pass the prompt via stdin (`-p -`) instead of argv so we
+        # dodge the OS argv-length limit entirely. The byte cap above is
+        # defence-in-depth — argv-length DoS path closed regardless.
         result = subprocess.run(
-            [claude_path, "-p", prompt, "--model", "claude-haiku-4-5-20251001"],
+            [claude_path, "-p", "-", "--model", "claude-haiku-4-5-20251001"],
+            input=prompt,
             capture_output=True, text=True, timeout=120,
         )
     except subprocess.TimeoutExpired:
         print("  warning: claude CLI timed out after 120s", file=sys.stderr)
         return None
-    except Exception as e:
+    # #py-m4 (#590): narrow `except Exception` to the families we
+    # actually expect from a subprocess call. Catching MemoryError or
+    # ImportError silently here would mask real failures.
+    except (OSError, subprocess.SubprocessError) as e:
         print(f"  warning: claude CLI failed: {e}", file=sys.stderr)
         return None
     if result.returncode != 0:
@@ -1769,8 +2335,9 @@ def synthesize_overview(
 def build_site(
     out_dir: Path = DEFAULT_OUT_DIR,
     synthesize: bool = False,
-    claude_path: str = "/usr/local/bin/claude",
+    claude_path: str = "",
     search_mode: str = "auto",
+    seed_project_stubs: bool = False,
 ) -> int:
     if not RAW_SESSIONS.exists():
         print(
@@ -1788,16 +2355,45 @@ def build_site(
     groups = group_by_project(sources)
     print(f"  grouped into {len(groups)} projects")
 
+    # #414: stub-seeding used to be unconditional. `build` is documented
+    # as read-only on `wiki/`, but seeding wrote to `wiki/projects/` —
+    # CI users running `llmwiki build` on a curated checkout discovered
+    # surprise commits in their working tree. Now opt-in: callers that
+    # have already accepted mutation (sync, the new `--seed-project-stubs`
+    # flag) request seeding explicitly; the default `build` is pure.
+    if seed_project_stubs:
+        stubs_written = ensure_project_stubs(groups, PROJECTS_META_DIR)
+        if stubs_written:
+            print(f"  seeded {len(stubs_written)} new wiki/projects/ stubs")
+
     # Reset output dir (clear contents only — the HTTP server may be cwd'd here)
+    # #py-m12 (#598): drop ignore_errors=True. A failure to remove a
+    # site/ subtree means we'll write a corrupted partial site on top
+    # of stale files; users have hit this when one CI runner left a
+    # read-only directory behind. Surface OSError instead so the build
+    # halts with a clear message.
     if out_dir.exists():
+        rmtree_errors: list[str] = []
+
+        def _on_rmtree_error(func, path, exc_info):
+            err = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+            rmtree_errors.append(f"{path}: {err}")
+
         for child in out_dir.iterdir():
             if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
+                # Python 3.12+ uses onexc; pre-3.12 uses onerror. Use
+                # onerror for back-compat with the 3.9 floor.
+                shutil.rmtree(child, onerror=_on_rmtree_error)
             else:
                 try:
                     child.unlink()
-                except OSError:
-                    pass
+                except OSError as e:
+                    rmtree_errors.append(f"{child}: {e}")
+        if rmtree_errors:
+            raise OSError(
+                "could not reset site dir " + str(out_dir) + ":\n  "
+                + "\n  ".join(rmtree_errors)
+            )
     else:
         out_dir.mkdir(parents=True)
 
@@ -1830,13 +2426,80 @@ def build_site(
         if synthesis:
             print(f"  synthesis: {len(synthesis)} chars")
 
-    # Render pages
+    # Render pages — single pass over `sources` (#py-m8 / #594).
+    # Sibling writes (.txt + .json) happen inside the same iteration so
+    # we don't re-walk `sources` later. The exporter import is hoisted
+    # ABOVE the loop with try/except: a missing module degrades to "no
+    # siblings on any session" (the import-fail case is truly fatal —
+    # no sense retrying it per-source).
+    #
+    # #v1378-review (architect + python-reviewer): per-source write
+    # failures are now isolated. The previous version set a single
+    # `siblings_failed` flag on the first OSError/ValueError/
+    # RuntimeError and silently dropped sibling writes for EVERY
+    # subsequent session in the loop — a single bad body on session 3
+    # of 500 produced 497 silently missing siblings. Now each source's
+    # sibling write is wrapped individually and collects errors into
+    # a list; the build proceeds and we print a summary at the end.
+    sibling_writers_loaded = True
+    sibling_import_error: Optional[BaseException] = None
+    try:
+        from llmwiki.exporters import write_page_json, write_page_txt
+    except (ImportError, OSError, ValueError, RuntimeError) as e:
+        sibling_writers_loaded = False
+        sibling_import_error = e
+
     n_sessions = 0
+    n_siblings = 0
+    sibling_failures: list[tuple[str, BaseException]] = []
+    _wikilink_re = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
     for path, meta, body in sources:
         project = str(meta.get("project") or path.parent.name)
         render_session(path, meta, body, out_dir, project)
         n_sessions += 1
+
+        if not sibling_writers_loaded:
+            continue
+        # render_session writes site/sessions/<project>/<stem>.html;
+        # mirror its path here so the siblings land alongside it.
+        html_path = out_dir / "sessions" / project / f"{path.stem}.html"
+        if not html_path.exists():
+            continue
+        try:
+            body_stripped = strip_leading_h1(body)
+            wikilinks_out = _wikilink_re.findall(body_stripped)
+            write_page_txt(html_path, body_stripped)
+            n_siblings += 1
+            meta_copy = dict(meta)
+            meta_copy.setdefault("slug", str(meta.get("slug", path.stem)))
+            meta_copy.setdefault("project", project)
+            write_page_json(html_path, meta_copy, body_stripped, wikilinks_out)
+            n_siblings += 1
+        except (OSError, ValueError, RuntimeError) as e:
+            # Isolate to this source — the next iteration still attempts
+            # both writes. n_siblings increments only after each
+            # successful write so the count never over-reports.
+            sibling_failures.append((str(html_path), e))
+
+    # Print warnings BEFORE the success line so a CI log scanner sees
+    # them in the right order (architect-review feedback).
+    if not sibling_writers_loaded:
+        print(
+            f"  warning: per-page siblings disabled (exporter import failed): "
+            f"{sibling_import_error}",
+            file=sys.stderr,
+        )
+    if sibling_failures:
+        first_path, first_err = sibling_failures[0]
+        print(
+            f"  warning: per-page sibling write failed on "
+            f"{len(sibling_failures)} of {n_sessions} sessions; "
+            f"first failure: {first_path}: {first_err}",
+            file=sys.stderr,
+        )
     print(f"  wrote {n_sessions} session pages")
+    if sibling_writers_loaded:
+        print(f"  wrote {n_siblings} per-page siblings (.txt + .json)")
 
     for project, sessions in groups.items():
         render_project_page(project, sessions, out_dir)
@@ -1846,13 +2509,16 @@ def build_site(
     render_sessions_index(sources, groups, out_dir)
     render_index(groups, sources, out_dir, synthesis=synthesis)
     cl_path = render_changelog(out_dir)
+    # #387 U8: branded 404 page that serve.py returns as the body of any
+    # 404 response, instead of the stdlib http.server default.
+    not_found_path = render_404(out_dir)
     # #284: compile README + CONTRIBUTING as standalone site pages so
     # they don't bounce visitors out to GitHub for content we're already
     # shipping as HTML.
     readme_path = render_readme_page(out_dir)
     contributing_path = render_contributing_page(out_dir)
     print(
-        "  wrote index.html, projects/index.html, sessions/index.html"
+        "  wrote index.html, projects/index.html, sessions/index.html, 404.html"
         + (", changelog.html" if cl_path else "")
     )
 
@@ -1861,11 +2527,16 @@ def build_site(
 
     # v0.4: AI-consumable exports (llms.txt, llms-full.txt, graph.jsonld,
     # sitemap.xml, rss.xml, robots.txt, ai-readme.md)
+    # #py-m4 (#590): narrow the catch so MemoryError, ImportError,
+    # and KeyboardInterrupt aren't silently swallowed into a warning
+    # line. ImportError in particular hides a broken module — the
+    # build should crash loud, not log "warning: AI exports failed:
+    # No module named ..." and ship a half-built site.
     try:
         from llmwiki.exporters import export_all
         ai_paths = export_all(out_dir, groups, sources)
         print(f"  wrote {len(ai_paths)} AI-consumable exports: {', '.join(sorted(ai_paths.keys()))}")
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         print(f"  warning: AI exports failed: {e}", file=sys.stderr)
 
     # v1.1 (#118): copy the interactive knowledge graph into the site
@@ -1875,7 +2546,7 @@ def build_site(
         graph_path = copy_graph_to_site(out_dir)
         if graph_path:
             print(f"  wrote {graph_path.relative_to(out_dir.parent)} (interactive graph viewer)")
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         print(f"  warning: graph viewer copy failed: {e}", file=sys.stderr)
 
     # v1.2 (#265): compile the editorial docs (tutorials + hub) under
@@ -1903,37 +2574,21 @@ def build_site(
                 f"  wrote site/docs/ ({len(docs_written)} editorial pages: "
                 "hub + tutorials + style guide)"
             )
-    except Exception as e:
+    # #py-m4: same narrow-catch pattern as above.
+    except (OSError, ValueError, RuntimeError) as e:
         print(f"  warning: docs compile failed: {e}", file=sys.stderr)
 
-    # v0.4: Per-page sibling .txt and .json
-    try:
-        from llmwiki.exporters import write_page_txt, write_page_json
-        n_siblings = 0
-        for path, meta, body in sources:
-            project = str(meta.get("project") or path.parent.name)
-            slug = str(meta.get("slug", path.stem))
-            html_path = out_dir / "sessions" / project / f"{path.stem}.html"
-            if html_path.exists():
-                body_stripped = strip_leading_h1(body)
-                wikilinks_out = [m for m in re.findall(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]", body_stripped)]
-                write_page_txt(html_path, body_stripped)
-                # Inject slug/title back into meta if missing
-                meta_copy = dict(meta)
-                meta_copy.setdefault("slug", slug)
-                meta_copy.setdefault("project", project)
-                write_page_json(html_path, meta_copy, body_stripped, wikilinks_out)
-                n_siblings += 2
-        print(f"  wrote {n_siblings} per-page siblings (.txt + .json)")
-    except Exception as e:
-        print(f"  warning: per-page siblings failed: {e}", file=sys.stderr)
+    # v0.4 per-page sibling .txt and .json — collapsed into the
+    # render_session loop above (#py-m8 / #594). The duplicate walk and
+    # html_path.exists() guard are gone; siblings now write inside the
+    # same iteration that produced the HTML.
 
     # v0.4: Build manifest with SHA-256 hashes
     try:
         from llmwiki.manifest import write_manifest
         manifest_path = write_manifest(out_dir)
         print(f"  wrote {manifest_path.relative_to(out_dir.parent) if manifest_path.is_relative_to(out_dir.parent) else manifest_path.name}")
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError) as e:
         print(f"  warning: manifest failed: {e}", file=sys.stderr)
 
     total_files = sum(1 for _ in out_dir.rglob("*.html"))
@@ -1949,7 +2604,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR)
     p.add_argument("--synthesize", action="store_true")
-    p.add_argument("--claude", type=str, default="/usr/local/bin/claude")
+    p.add_argument("--claude", type=str, default="")
     return p.parse_args()
 
 
@@ -2038,7 +2693,10 @@ def _agent_map(agent: str) -> tuple[str, str]:
         "gemini": ("Gemini", "agent-gemini"),
         "gemini-cli": ("Gemini", "agent-gemini"),
         "obsidian": ("Obsidian", "agent-obsidian"),
-        "pdf": ("PDF", "agent-pdf"),
+        # Simplification sweep removed the PDF adapter. The "pdf" entry
+        # used to live here; left as a comment so a future grep sees
+        # the rationale instead of guessing why the agent-pdf badge is
+        # gone. CSS class .agent-pdf is also removed (see render/css.py).
     }
     return m.get(agent, (agent.title(), "agent-unknown"))
 

@@ -10,10 +10,11 @@ Subcommands:
     serve             Start local HTTP server
     adapters          List available session-store adapters
     graph             Build the knowledge graph (graph/graph.json + graph.html)
-    export            Export AI-consumable formats (llms-txt, jsonld, sitemap, ...)
+    export            Export AI-consumable formats: llms-txt, llms-full-txt, jsonld, sitemap, rss, robots, ai-readme, marp
     lint              Run lint rules against the wiki
     candidates        List / promote / merge / discard candidate pages
     synthesize        Synthesize wiki source pages from raw sessions via LLM
+    all               Run the full pipeline: build → graph → export all → lint
     version           Print version and exit
 """
 
@@ -26,11 +27,41 @@ from typing import Any, Optional
 
 from llmwiki import __version__, REPO_ROOT
 from llmwiki.adapters import REGISTRY, discover_adapters
+# #v1378-review (#691 follow-up): hoist these re-exports from mid-module
+# to here so the file passes E402 cleanly. They re-export business
+# logic that lives in the proper domain modules now (#611) — kept here
+# for any caller still importing from llmwiki.cli.
+from llmwiki.adapters.status import adapter_status as _adapter_status  # noqa: F401
+from llmwiki.synth.estimate import synthesize_estimate_report  # noqa: F401
+# #691 / #arch-h8: extracted business logic moves out of cli.py.
+# cli.py keeps thin re-export wrappers for back-compat with anyone
+# doing `from llmwiki.cli import cmd_all, cmd_sync_status, ...`.
+from llmwiki.config_schedule import (  # noqa: F401
+    load_schedule_config as _load_schedule_config,
+    should_run_after_sync as _should_run_after_sync,
+)
+from llmwiki.pipeline import run_pipeline as _run_pipeline
+from llmwiki.sync.status import (  # noqa: F401
+    cmd_sync_status,
+    resolve_key_exists as _resolve_key_exists,
+)
+from llmwiki.synth.cli_helpers import (  # noqa: F401
+    complete as _synthesize_complete,
+    list_pending as _synthesize_list_pending,
+)
 
 
 def cmd_version(args: argparse.Namespace) -> int:
     print(f"llmwiki {__version__}")
     return 0
+
+
+def cmd_all(args: argparse.Namespace) -> int:
+    """Run the full wiki pipeline end-to-end: build → graph → export all → lint.
+
+    Thin shim — the implementation lives in ``llmwiki.pipeline`` (#691).
+    """
+    return _run_pipeline(args)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -52,14 +83,27 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     # Seed index/log/overview + navigation files if not present
     seeds = {
-        "wiki/index.md": "# Wiki Index\n\n## Overview\n- [Overview](overview.md)\n\n## Sources\n\n## Entities\n\n## Concepts\n\n## Syntheses\n",
+        "wiki/index.md": (
+            "# Wiki Index\n\n"
+            "<!-- #387 U6: each section heading carries a (count) so the index\n"
+            "stays scannable as the wiki grows past ~50 pages. Update the count\n"
+            "in the heading when adding/removing pages. The index is otherwise\n"
+            "kept flat (no nested folders) so a single grep/scan can find any\n"
+            "page without descending into a tree. -->\n\n"
+            "## Overview (1)\n- [Overview](overview.md)\n\n"
+            "## Sources (0)\n\n"
+            "## Entities (0)\n\n"
+            "## Projects (0)\n\n"
+            "## Concepts (0)\n\n"
+            "## Syntheses (0)\n"
+        ),
         "wiki/overview.md": '---\ntitle: "Overview"\ntype: synthesis\nsources: []\nlast_updated: ""\n---\n\n# Overview\n\n*This page is maintained by your coding agent.*\n',
         "wiki/log.md": "# Wiki Log\n\nAppend-only chronological record of all operations.\n\nFormat: `## [YYYY-MM-DD] <operation> | <title>`\n\n---\n",
         "wiki/hints.md": '---\ntitle: "Navigation Hints"\ntype: navigation\nlast_updated: ""\n---\n\n# Hints\n\nWriting conventions, entity naming rules, and navigation guidance.\nCustomize this file for your project.\n',
         "wiki/hot.md": '---\ntitle: "Hot Cache"\ntype: navigation\nlast_updated: ""\nauto_maintained: true\n---\n\n# Hot Cache\n\n*Auto-maintained. Last 10 session summaries.*\n',
         "wiki/MEMORY.md": '---\ntitle: "Cross-Session Memory"\ntype: navigation\nlast_updated: ""\nmax_lines: 200\n---\n\n# MEMORY\n\n*200-line cap. Auto-consolidated by Auto Dream.*\n\n## User\n\n## Feedback\n\n## Project\n\n## Reference\n',
         "wiki/SOUL.md": '---\ntitle: "Wiki Identity"\ntype: navigation\nlast_updated: ""\n---\n\n# SOUL\n\nThis wiki compiles raw session transcripts into structured, interlinked pages.\nCustomize this file to set your wiki\'s voice and purpose.\n',
-        "wiki/CRITICAL_FACTS.md": '---\ntitle: "Critical Facts"\ntype: navigation\nlast_updated: ""\n---\n\n# Critical Facts\n\n- raw/ is immutable — never modify files under raw/\n- Wiki uses [[wikilinks]] for cross-references\n- Confidence: 0.0-1.0, 4-factor formula\n- Lifecycle: draft > reviewed > verified > stale > archived\n',
+        "wiki/CRITICAL_FACTS.md": '---\ntitle: "Critical Facts"\ntype: navigation\nlast_updated: ""\n---\n\n# Critical Facts\n\n- raw/ is immutable — never modify files under raw/\n- Wiki uses Obsidian-style double-bracket syntax for cross-references\n- Confidence: 0.0-1.0, 4-factor formula\n- Lifecycle: draft > reviewed > verified > stale > archived\n',
     }
 
     # v1.0 (#153): seed dashboard.md from examples/wiki_dashboard.md template
@@ -85,23 +129,39 @@ def cmd_sync(args: argparse.Namespace) -> int:
     if getattr(args, "status", False):
         return cmd_sync_status(args)
 
-    from llmwiki.convert import convert_all
+    from llmwiki.convert import convert_all, DEFAULT_OUT_DIR, DEFAULT_STATE_FILE
 
     # v1.2 (#54): vault-overlay mode — resolve the vault early so bad
     # paths fail before we spend time converting sessions.
-    if getattr(args, "vault", None):
+    # #470: actually wire the resolved vault root through to convert_all.
+    # Previously this block printed a banner and then called convert_all
+    # with no vault/out_dir argument, so all 500+ sessions wrote to the
+    # repo's raw/sessions/ instead of the vault. The summary line said
+    # "507 converted" but the vault directory was empty.
+    vault_path = getattr(args, "vault", None)
+    out_dir = DEFAULT_OUT_DIR
+    state_file = DEFAULT_STATE_FILE
+    if vault_path:
         from llmwiki.vault import describe_vault, resolve_vault
         try:
-            vault = resolve_vault(args.vault)
+            vault = resolve_vault(vault_path)
         except (FileNotFoundError, NotADirectoryError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         print(f"==> {describe_vault(vault)}")
         if args.allow_overwrite:
             print("  --allow-overwrite: existing vault pages may be clobbered")
+        # Route writes into the vault so a vault-mode sync actually
+        # populates the vault. State file co-located with the vault so
+        # two different vaults don't share idempotency state (same
+        # principle as #420 for synth state).
+        out_dir = vault.root / "raw" / "sessions"
+        state_file = vault.root / ".llmwiki-state.json"
 
     rc = convert_all(
         adapters=args.adapter,
+        out_dir=out_dir,
+        state_file=state_file,
         since=args.since,
         project=args.project,
         include_current=args.include_current,
@@ -110,16 +170,25 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     # v1.0 (#157): auto-build and auto-lint after sync.
     # --no-build and --no-lint let users opt out.
+    # #470: when --vault was given, point the auto-build at the vault's
+    # site/ tree too — otherwise the build silently writes to the
+    # repo's site/ and the user's vault stays empty.
     if rc == 0:
         schedule = _load_schedule_config()
+        site_root = (vault.root / "site") if vault_path else (REPO_ROOT / "site")
         if args.auto_build and _should_run_after_sync(schedule.get("build", "on-sync")):
             print("  auto-build: regenerating site/...")
             from llmwiki.build import build_site
-            build_site(out_dir=REPO_ROOT / "site")
+            # #414: sync has explicit user opt-in to mutate wiki/, so it's
+            # the right place to seed project stubs.
+            build_site(out_dir=site_root, seed_project_stubs=True)
         if args.auto_lint and _should_run_after_sync(schedule.get("lint", "manual")):
             print("  auto-lint: running wiki lint...")
             from llmwiki.lint import load_pages, run_all, summarize
-            pages = load_pages()
+            # #470: lint the vault's wiki/, not the repo's, when in
+            # vault-overlay mode.
+            wiki_dir = (vault.root / "wiki") if vault_path else None
+            pages = load_pages(wiki_dir) if wiki_dir else load_pages()
             issues = run_all(pages)
             summary = summarize(issues)
             print(f"  lint: {sum(summary.values())} issues "
@@ -128,32 +197,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return rc
 
 
-def _load_schedule_config() -> dict[str, str]:
-    """Load build/lint schedule config from sessions_config.json."""
-    import json as _json
-    from llmwiki import REPO_ROOT
-    config_path = REPO_ROOT / "examples" / "sessions_config.json"
-    if not config_path.is_file():
-        return {"build": "on-sync", "lint": "manual"}
-    try:
-        data = _json.loads(config_path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {"build": "on-sync", "lint": "manual"}
-    schedule = data.get("schedule", {})
-    return {
-        "build": schedule.get("build", "on-sync"),
-        "lint": schedule.get("lint", "manual"),
-    }
-
-
-def _should_run_after_sync(schedule: str) -> bool:
-    """Return True if the schedule value indicates running after sync.
-
-    Accepted values: "on-sync", "daily", "weekly", "manual", "never".
-    Only "on-sync" triggers from cmd_sync. "daily"/"weekly" run from a
-    scheduled task; "manual" and "never" never auto-run.
-    """
-    return schedule.lower() == "on-sync"
+# _load_schedule_config + _should_run_after_sync moved to
+# llmwiki/config_schedule.py and re-exported at top of file (#691).
 
 
 def cmd_build(args: argparse.Namespace) -> int:
@@ -176,6 +221,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         synthesize=args.synthesize,
         claude_path=args.claude,
         search_mode=args.search_mode,
+        seed_project_stubs=getattr(args, "seed_project_stubs", False),
     )
 
 
@@ -183,48 +229,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
     """Serve the built site via a local HTTP server."""
     from llmwiki.serve import serve_site
     return serve_site(directory=args.dir, port=args.port, host=args.host, open_browser=args.open)
-
-
-def _adapter_status(
-    name: str,
-    adapter_cls: Any,
-    config: dict,
-) -> tuple[str, str]:
-    """Return ``(configured, will_fire)`` labels for one adapter (G-01 · #287).
-
-    * ``configured``: ``explicit`` (user set ``enabled: true`` in the
-      config), ``off`` (user set ``enabled: false``), or ``auto``
-      (default — no explicit toggle).
-    * ``will_fire``: ``yes`` when the next ``sync`` will pick this
-      adapter up (available **and** not explicitly off), ``no``
-      otherwise.
-
-    The old labels — ``-`` / ``enabled`` / ``disabled`` — read as
-    "adapter can't see anything" even when the adapter was discovering
-    471 files on the next line.  The new labels say exactly what they
-    mean without the user cross-referencing ``sessions_config.json``.
-    """
-    adapter_cfg = config.get(name, {})
-    enabled_in_cfg = None
-    if isinstance(adapter_cfg, dict):
-        enabled_in_cfg = adapter_cfg.get("enabled", None)
-    if enabled_in_cfg is True:
-        configured = "explicit"
-    elif enabled_in_cfg is False:
-        configured = "off"
-    else:
-        configured = "auto"
-    available = adapter_cls.is_available()
-    # #326: non-AI adapters are opt-in only, so ``auto`` on an Obsidian /
-    # Jira / Meeting / PDF adapter means "available but won't fire".
-    is_ai = getattr(adapter_cls, "is_ai_session", True)
-    if configured == "off":
-        will_fire = "no"
-    elif configured == "explicit":
-        will_fire = "yes" if available else "no"
-    else:  # auto
-        will_fire = "yes" if (available and is_ai) else "no"
-    return configured, will_fire
 
 
 def cmd_adapters(args: argparse.Namespace) -> int:
@@ -256,41 +260,44 @@ def cmd_adapters(args: argparse.Namespace) -> int:
 
     # Description column width: 40 by default, full line with --wide,
     # or auto-fit to terminal (minus the four fixed columns + gutters).
+    # #387 U2: column names renamed from default/configured/will_fire to
+    # present/enabled/active — they read at a glance without needing the
+    # legend below.
     wide = bool(getattr(args, "wide", False))
     if wide:
         desc_width: Optional[int] = None  # no cap
     else:
         term_cols = _shutil.get_terminal_size(fallback=(80, 24)).columns
-        # Layout: "  name(16)  default(8)  configured(10)  will_fire(9)  desc" — fixed overhead ~55.
-        desc_width = max(30, term_cols - 57)
+        # Layout: "  name(16)  present(8)  enabled(10)  active(7)  desc"
+        desc_width = max(30, term_cols - 55)
 
     print("Registered adapters:")
     dash = "-"
     header = (
-        f"  {'name':<16}  {'default':<8}  {'configured':<10}  "
-        f"{'will_fire':<9}  description"
+        f"  {'name':<16}  {'present':<8}  {'enabled':<10}  "
+        f"{'active':<7}  description"
     )
     print(header)
     sep_desc = "-" * (desc_width if desc_width is not None else len("description"))
     print(
-        f"  {dash * 16}  {dash * 8}  {dash * 10}  {dash * 9}  {sep_desc}"
+        f"  {dash * 16}  {dash * 8}  {dash * 10}  {dash * 7}  {sep_desc}"
     )
     for name, adapter_cls in sorted(REGISTRY.items()):
-        default_avail = "yes" if adapter_cls.is_available() else "no"
-        configured, will_fire = _adapter_status(name, adapter_cls, config)
+        present = "yes" if adapter_cls.is_available() else "no"
+        enabled, active = _adapter_status(name, adapter_cls, config)
         desc = adapter_cls.description()
         if desc_width is not None and len(desc) > desc_width:
             desc = desc[: max(desc_width - 3, 1)] + "..."
         print(
-            f"  {name:<16}  {default_avail:<8}  {configured:<10}  "
-            f"{will_fire:<9}  {desc}"
+            f"  {name:<16}  {present:<8}  {enabled:<10}  "
+            f"{active:<7}  {desc}"
         )
 
     print()
     print("Columns:")
-    print("  default    — is the adapter's session store present on disk?")
-    print("  configured — auto (default), explicit (enabled:true in config), off (enabled:false)")
-    print("  will_fire  — will `sync` pick this adapter up on its next run?")
+    print("  present  — is the adapter's session store visible on disk?")
+    print("  enabled  — auto (default), explicit (enabled:true in config), off (enabled:false)")
+    print("  active   — yes/no — will `sync` pick this adapter up on its next run?")
     if not wide:
         print()
         print("Pass --wide to see untruncated descriptions.")
@@ -301,7 +308,7 @@ def cmd_query(args: argparse.Namespace) -> int:
     """Query the knowledge graph with a natural language question."""
     from llmwiki.graphify_bridge import is_available, query_graph
     if not is_available():
-        print("error: graphifyy not installed. Run: pip install llmwiki[graph]", file=sys.stderr)
+        print("error: graphify not installed. Run: pip install llmwiki[graph]", file=sys.stderr)
         return 2
     question = " ".join(args.question)
     result = query_graph(question, depth=args.depth, token_budget=args.budget)
@@ -310,17 +317,40 @@ def cmd_query(args: argparse.Namespace) -> int:
 
 
 def cmd_graph(args: argparse.Namespace) -> int:
-    """Build the knowledge graph from wiki/ wikilinks."""
+    """Build the knowledge graph from wiki/ wikilinks.
+
+    #488: graphify-engine failures (uninstalled, crashes, empty
+    result) ALL fall back to the builtin engine so the user always
+    gets *some* graph. Only the builtin engine's exit code is
+    authoritative for the CLI return value.
+    """
     engine = getattr(args, "engine", "graphify")
     if engine == "graphify":
         from llmwiki.graphify_bridge import is_available, build_graphify_graph
         if not is_available():
-            print("  graphifyy not installed — falling back to builtin engine", file=sys.stderr)
+            print("  graphify not installed — falling back to builtin engine", file=sys.stderr)
             print("  install with: pip install llmwiki[graph]", file=sys.stderr)
             engine = "builtin"
         else:
-            result = build_graphify_graph()
-            return 0 if result.get("graph") is not None else 1
+            try:
+                result = build_graphify_graph()
+            except Exception as e:
+                # #488: uncaught graphify exception used to surface as a
+                # bare stack trace + non-zero exit. Now we log a warning
+                # and fall through to the builtin engine.
+                print(f"  graphify engine crashed ({type(e).__name__}: {e}) — "
+                      f"falling back to builtin", file=sys.stderr)
+                engine = "builtin"
+            else:
+                if result.get("graph") is not None:
+                    return 0
+                # #488: empty-result early-return used to fail with rc=1
+                # without trying builtin. graphify can legitimately
+                # return None for tiny corpora (no edges); the builtin
+                # engine handles the same input gracefully.
+                print("  graphify returned no graph — falling back to builtin",
+                      file=sys.stderr)
+                engine = "builtin"
 
     from llmwiki.graph import build_and_report
     write_json = args.format in ("json", "both")
@@ -328,104 +358,8 @@ def cmd_graph(args: argparse.Namespace) -> int:
     return build_and_report(write_json_flag=write_json, write_html_flag=write_html)
 
 
-def cmd_sync_status(args: argparse.Namespace) -> int:
-    """Report sync observability — last run, per-adapter counters, quarantined sources.
-
-    G-03 (#289): emits a one-screen status report so operators can see
-    *what synced / what didn't / why*.  Reads ``.llmwiki-state.json``
-    for the last-sync timestamp + per-adapter counters (written there
-    by ``convert_all``) and ``.llmwiki-quarantine.json`` for the failing
-    sources.
-    """
-    import json as _json
-    from datetime import datetime, timezone
-    from pathlib import Path as _Path
-
-    from llmwiki import quarantine as _q
-    from llmwiki.convert import DEFAULT_STATE_FILE
-
-    state: dict = {}
-    if DEFAULT_STATE_FILE.is_file():
-        try:
-            state = _json.loads(DEFAULT_STATE_FILE.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            state = {}
-
-    meta = state.pop("_meta", {}) if isinstance(state, dict) else {}
-    counters = state.pop("_counters", {}) if isinstance(state, dict) else {}
-
-    last_sync = meta.get("last_sync")
-    if last_sync:
-        try:
-            ts = datetime.fromisoformat(last_sync.replace("Z", "+00:00"))
-            delta = datetime.now(timezone.utc) - ts
-            human = f"{int(delta.total_seconds() // 3600)}h ago"
-            print(f"Last sync: {last_sync} ({human})")
-        except ValueError:
-            print(f"Last sync: {last_sync}")
-    else:
-        print("Last sync: never (or pre-upgrade state file)")
-
-    print()
-    if counters:
-        print("Adapters:")
-        header = (
-            f"  {'adapter':<16}  {'discovered':>10}  {'converted':>9}  "
-            f"{'unchanged':>9}  {'live':>5}  {'filtered':>8}  {'errored':>7}"
-        )
-        print(header)
-        print("  " + "-" * (len(header) - 2))
-        for name, c in sorted(counters.items()):
-            print(
-                f"  {name:<16}  {c.get('discovered', 0):>10}  "
-                f"{c.get('converted', 0):>9}  "
-                f"{c.get('unchanged', 0):>9}  "
-                f"{c.get('live', 0):>5}  "
-                f"{c.get('filtered', 0):>8}  "
-                f"{c.get('errored', 0):>7}"
-            )
-    else:
-        print("No per-adapter counters recorded (run `llmwiki sync` first).")
-
-    print()
-    orphans = [
-        k for k in state.keys()
-        if isinstance(k, str) and k.startswith(tuple(f"{n}::" for n in counters))
-        and not _resolve_key_exists(k)
-    ]
-    if orphans:
-        print(f"Orphan state entries: {len(orphans)} (source path no longer on disk)")
-
-    # Read the module-level default at call time so monkeypatches take effect.
-    quar_counts = _q.count_by_adapter(_q.DEFAULT_QUARANTINE_FILE)
-    if quar_counts:
-        total = sum(quar_counts.values())
-        print(f"Quarantined sources: {total} "
-              f"({', '.join(f'{k}:{v}' for k, v in sorted(quar_counts.items()))})")
-    else:
-        print("Quarantined sources: 0")
-
-    if args.recent:
-        from llmwiki.log_reader import recent_events
-        log_path = REPO_ROOT / "wiki" / "log.md"
-        events = recent_events(log_path, limit=args.recent, operations={"sync", "synthesize"})
-        if events:
-            print()
-            print(f"Recent activity (last {len(events)}):")
-            for e in events:
-                print(f"  [{e.date.isoformat()}] {e.operation:<12} {e.title}")
-
-    return 0
-
-
-def _resolve_key_exists(key: str) -> bool:
-    """Check whether a portable state-file key points at an extant file."""
-    from pathlib import Path as _Path
-    if "::" not in key:
-        return _Path(key).exists()
-    _, rel = key.split("::", 1)
-    candidate = _Path.home() / rel
-    return candidate.exists() or _Path(rel).exists()
+# cmd_sync_status + _resolve_key_exists moved to llmwiki/sync/status.py
+# and re-exported at top of file (#691).
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -579,9 +513,30 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # #420: vault-overlay mode isolates raw/wiki/state to the vault root.
+    vault_path = getattr(args, "vault", None)
+    raw_dir = wiki_sources_dir = state_file = None
+    if vault_path:
+        from llmwiki.vault import resolve_vault
+        try:
+            vault = resolve_vault(vault_path)
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        # Post-final-review: Vault is a frozen dataclass with no
+        # __truediv__ — `vault / "raw"` raises TypeError. cmd_sync at
+        # line 205 correctly uses `vault.root / "raw"`; this site was
+        # the missed copy. Caught by the multi-agent code review.
+        raw_dir = vault.root / "raw" / "sessions"
+        wiki_sources_dir = vault.root / "wiki" / "sources"
+        state_file = vault.root / ".llmwiki-synth-state.json"
+
     summary = synthesize_new_sessions(
         backend=backend,
         force=args.force,
+        raw_dir=raw_dir,
+        wiki_sources_dir=wiki_sources_dir,
+        state_file=state_file,
     )
     print(
         f"Scanned {summary['total_scanned']}, new {summary['new_files']}, "
@@ -595,206 +550,8 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
 
 
 # ─── #316 agent-delegate CLI helpers ─────────────────────────────────
-
-
-def _synthesize_list_pending() -> int:
-    """Print the pending-prompts table for ``--list-pending``.
-
-    Two-column layout: uuid │ slug · project · date · prompt-path.
-    Exit 0 even when empty — the slash-command layer treats "nothing
-    pending" as a success signal.
-    """
-    from llmwiki.synth.agent_delegate import list_pending
-
-    rows = list_pending()
-    if not rows:
-        print("No pending prompts.")
-        return 0
-    # Max-width uuid column for alignment.
-    uuid_w = max(len(r["uuid"]) for r in rows)
-    print(f"{'UUID':<{uuid_w}}  SLUG · PROJECT · DATE")
-    print(f"{'-' * uuid_w}  " + "-" * 40)
-    for r in rows:
-        meta = " · ".join(
-            part for part in (r["slug"], r["project"], r["date"]) if part
-        )
-        print(f"{r['uuid']:<{uuid_w}}  {meta}")
-    print(f"\n{len(rows)} pending prompt(s).")
-    return 0
-
-
-def _synthesize_complete(args: argparse.Namespace) -> int:
-    """Rewrite a placeholder wiki page with the agent's synthesis.
-
-    Reads the synthesized body from ``args.body`` (file) or stdin, calls
-    :func:`llmwiki.synth.agent_delegate.complete_pending` to replace the
-    sentinel + prompt-file pair with the real content.  Exit codes:
-
-    * ``0`` — success
-    * ``1`` — missing --page, uuid mismatch, missing sentinel, or I/O
-      error
-    """
-    from llmwiki.synth.agent_delegate import complete_pending
-
-    if not args.page:
-        print("error: --complete requires --page <path>", file=sys.stderr)
-        return 1
-
-    page_path = Path(args.page)
-    if not page_path.is_absolute():
-        page_path = REPO_ROOT / page_path
-
-    if args.body:
-        body_path = Path(args.body)
-        if not body_path.is_absolute():
-            body_path = REPO_ROOT / body_path
-        try:
-            body = body_path.read_text(encoding="utf-8")
-        except OSError as e:
-            print(f"error: reading --body {body_path}: {e}", file=sys.stderr)
-            return 1
-    else:
-        body = sys.stdin.read()
-        if not body:
-            print(
-                "error: --complete expects a body on stdin or via --body",
-                file=sys.stderr,
-            )
-            return 1
-
-    try:
-        complete_pending(args.complete, body, page_path)
-    except FileNotFoundError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    except ValueError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
-    print(f"completed: {page_path}")
-    return 0
-
-
-def synthesize_estimate_report(
-    *,
-    raw_sessions: Optional[list[tuple[Any, dict, str]]] = None,
-    state_keys: Optional[set[str]] = None,
-    prefix_tokens: Optional[int] = None,
-    output_tokens_per_call: int = 1000,
-    model: Optional[str] = None,
-) -> dict:
-    """Compute the incremental vs full-force cost report (G-07 · #293).
-
-    Returns a plain dict so the CLI can render it AND tests can inspect
-    the numbers without parsing stdout.  Keys:
-
-    * ``corpus`` — total raw sessions discovered under ``raw/sessions/``
-    * ``synthesized`` — count already synthesized (from state file)
-    * ``new`` — ``corpus - synthesized``
-    * ``incremental_usd`` — dollars to synthesize the ``new`` bucket
-    * ``full_force_usd`` — dollars to re-synthesize the **whole** corpus
-      with ``--force`` (one cache write + N-1 cache hits)
-    * ``prefix_tokens`` — tokens in the stable CLAUDE.md + index.md +
-      overview.md prefix
-    * ``model`` — model id used for pricing
-    * ``warnings`` — list of human-readable warnings (e.g. prefix too
-      small to be cached)
-
-    Any of the args can be injected for tests; the default reads from
-    disk and is what the CLI invokes.
-    """
-    from llmwiki.cache import (
-        DEFAULT_MODEL,
-        estimate_cost,
-        estimate_tokens,
-        warn_prefix_too_small,
-    )
-    from llmwiki.synth.pipeline import _discover_raw_sessions, _load_state
-
-    chosen_model = model or DEFAULT_MODEL
-    warnings: list[str] = []
-
-    if prefix_tokens is None:
-        prefix_parts: list[str] = []
-        for rel in ("CLAUDE.md", "wiki/index.md", "wiki/overview.md"):
-            p = REPO_ROOT / rel
-            if p.is_file():
-                prefix_parts.append(p.read_text(encoding="utf-8"))
-        prefix_tokens = estimate_tokens("\n".join(prefix_parts))
-    prefix_warning = warn_prefix_too_small(prefix_tokens)
-    if prefix_warning:
-        warnings.append(prefix_warning)
-
-    if raw_sessions is None:
-        raw_sessions = _discover_raw_sessions()
-    if state_keys is None:
-        state_keys = set(_load_state().keys())
-
-    corpus = len(raw_sessions)
-
-    # The real synth state stores rel-paths under ``raw/sessions/``
-    # (e.g. ``proj/2026-04-09-slug.md``).  Match against those first;
-    # fall back to bare filename + suffix-endswith for tests that
-    # inject simpler keys.  A session counts as "synthesized" if any
-    # of those three keys already appears in state_keys.
-    from llmwiki.synth.pipeline import RAW_SESSIONS as _RAW
-    synthed = 0
-    new_bodies: list[str] = []
-    for p, _meta, body in raw_sessions:
-        keys_to_try: set[str] = set()
-        name = getattr(p, "name", str(p))
-        keys_to_try.add(name)
-        if hasattr(p, "relative_to"):
-            try:
-                keys_to_try.add(str(p.relative_to(_RAW)))
-            except (ValueError, AttributeError):
-                pass
-        keys_to_try.add(str(p))
-        matched = bool(keys_to_try & state_keys) or any(
-            isinstance(k, str) and k.endswith(name) for k in state_keys
-        )
-        if matched:
-            synthed += 1
-        else:
-            new_bodies.append(body)
-    new = corpus - synthed
-
-    def _bucket_usd(bodies: list[str]) -> float:
-        if not bodies:
-            return 0.0
-        first = estimate_cost(
-            cached_tokens=prefix_tokens,
-            fresh_tokens=estimate_tokens(bodies[0]),
-            output_tokens=output_tokens_per_call,
-            model=chosen_model,
-            cache_hit=False,
-        )
-        total = first.usd
-        for body in bodies[1:]:
-            est = estimate_cost(
-                cached_tokens=prefix_tokens,
-                fresh_tokens=estimate_tokens(body),
-                output_tokens=output_tokens_per_call,
-                model=chosen_model,
-                cache_hit=True,
-            )
-            total += est.usd
-        return total
-
-    incremental_usd = _bucket_usd(new_bodies)
-    full_force_bodies = [body for _p, _m, body in raw_sessions]
-    full_force_usd = _bucket_usd(full_force_bodies)
-
-    return {
-        "corpus": corpus,
-        "synthesized": synthed,
-        "new": new,
-        "incremental_usd": incremental_usd,
-        "full_force_usd": full_force_usd,
-        "prefix_tokens": prefix_tokens,
-        "model": chosen_model,
-        "warnings": warnings,
-    }
+# _synthesize_list_pending + _synthesize_complete moved to
+# llmwiki/synth/cli_helpers.py and re-exported at top of file (#691).
 
 
 def _synthesize_estimate() -> int:
@@ -811,7 +568,7 @@ def _synthesize_estimate() -> int:
         print(f"warning: {w}")
 
     print(f"Corpus:                {report['corpus']:>6} sessions in raw/sessions/")
-    print(f"Synthesized (history): {report['synthesized']:>6} already in wiki/sources/")
+    print(f"Already synthesized:   {report['synthesized']:>6} pages in wiki/sources/")
     print(f"New since last run:    {report['new']:>6}")
     print()
     print(f"Prefix: {report['prefix_tokens']:,} tok  Model: {report['model']}")
@@ -893,6 +650,36 @@ def cmd_candidates(args: argparse.Namespace) -> int:
     return 2
 
 
+def _add_vault_arg(parser: argparse.ArgumentParser, *, role: str) -> None:
+    """#arch-m8 (#620): single source of truth for the ``--vault`` flag.
+
+    All three subcommands that accept ``--vault`` (sync, build, synthesize)
+    used to declare it independently with subtly different help text and
+    behaviour. The semantics differ legitimately by subcommand (sync
+    WRITES into the vault; build READS from it; synthesize isolates the
+    state file under it), so we keep the role-specific help string per
+    site, but the flag spelling, type, default, and metavar are unified
+    here so a future refactor changes them in one place.
+    """
+    parser.add_argument(
+        "--vault", type=Path, default=None, metavar="PATH",
+        help={
+            "sync": "Vault-overlay mode (#54): write new pages inside an "
+                    "existing Obsidian / Logseq vault instead of the "
+                    "repo's wiki/ directory.",
+            "build": "Vault-overlay mode (#54): build from an existing "
+                     "Obsidian / Logseq vault. Still writes site output to "
+                     "--out.",
+            "synthesize": "(#420) Vault-overlay mode: read raw/ + write "
+                          "wiki/sources/ under the vault root, and isolate "
+                          "the synth state file to the vault. Without this "
+                          "flag the state file lives at the repo root, so "
+                          "two vaults synthesised against the same repo "
+                          "silently share idempotency state.",
+        }[role],
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="llmwiki",
@@ -915,17 +702,15 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--force", action="store_true", help="Ignore state file, reconvert everything")
     sync.add_argument(
         "--auto-build", action=argparse.BooleanOptionalAction, default=True,
-        help="After sync, auto-rebuild the static site if schedule allows (default: on)",
+        help="After sync, rebuild the site when sessions_config.json's "
+             "schedule.build is 'on-sync' (default: on; pass --no-auto-build to skip)",
     )
     sync.add_argument(
         "--auto-lint", action=argparse.BooleanOptionalAction, default=True,
-        help="After sync, auto-run lint if schedule allows (default: on)",
+        help="After sync, run lint when sessions_config.json's "
+             "schedule.lint is 'on-sync' (default: on; pass --no-auto-lint to skip)",
     )
-    sync.add_argument(
-        "--vault", type=Path, default=None,
-        help="Vault-overlay mode (#54): write new pages inside an existing "
-             "Obsidian / Logseq vault instead of the repo's wiki/ directory",
-    )
+    _add_vault_arg(sync, role="sync")
     sync.add_argument(
         "--allow-overwrite", action="store_true",
         help="With --vault: allow clobbering existing vault pages "
@@ -946,15 +731,23 @@ def build_parser() -> argparse.ArgumentParser:
     build = sub.add_parser("build", help="Compile static HTML site from raw/ + wiki/")
     build.add_argument("--out", type=Path, default=REPO_ROOT / "site", help="Output dir (default: site/)")
     build.add_argument("--synthesize", action="store_true", help="Call claude CLI for overview synthesis")
-    build.add_argument("--claude", type=str, default="/usr/local/bin/claude", help="Path to claude CLI")
+    build.add_argument(
+        "--claude", type=str, default="",
+        help="Path to claude CLI (#421: defaults to `shutil.which('claude')` "
+             "so PATH-based / brew / nvm / Windows installs all work)",
+    )
     build.add_argument(
         "--search-mode", choices=["auto", "tree", "flat"], default="auto",
         help="Search index mode (#53): auto picks tree vs flat from heading depth",
     )
+    _add_vault_arg(build, role="build")
     build.add_argument(
-        "--vault", type=Path, default=None,
-        help="Vault-overlay mode (#54): build from an existing Obsidian / "
-             "Logseq vault. Still writes site output to --out.",
+        "--seed-project-stubs", action="store_true", dest="seed_project_stubs",
+        help="(#414) Auto-create wiki/projects/<slug>.md stubs for any "
+             "newly-discovered project that doesn't have a metadata file. "
+             "Off by default — `build` is read-only on wiki/. Use `sync` "
+             "(which already mutates wiki/) for routine seeding, or pass "
+             "this flag to opt in from CI/scripts.",
     )
     build.set_defaults(func=cmd_build)
 
@@ -985,7 +778,10 @@ def build_parser() -> argparse.ArgumentParser:
     graph.set_defaults(func=cmd_graph)
 
     # export (v0.4)
-    exp2 = sub.add_parser("export", help="Export AI-consumable formats (llms-txt, jsonld, sitemap, ...)")
+    exp2 = sub.add_parser(
+        "export",
+        help="Export AI-consumable formats: llms-txt, llms-full-txt, jsonld, sitemap, rss, robots, ai-readme, marp (or 'all')",
+    )
     exp2.add_argument(
         "format",
         choices=["llms-txt", "llms-full-txt", "jsonld", "sitemap", "rss", "robots", "ai-readme", "marp", "all"],
@@ -1045,26 +841,37 @@ def build_parser() -> argparse.ArgumentParser:
         "synthesize",
         help="Synthesize wiki source pages from raw sessions via LLM backend",
     )
-    syn.add_argument(
+    # #arch-h7 (#610): the four "what should this invocation do?" flags
+    # used to be independently set-able. argparse silently honoured the
+    # first one in `cmd_synthesize`'s if/elif chain, so e.g.
+    # `synthesize --check --estimate` ran --check and silently dropped
+    # --estimate. Use a mutually-exclusive group so the parser rejects
+    # the combination loudly with a useful error.
+    syn_mode = syn.add_mutually_exclusive_group()
+    syn_mode.add_argument(
         "--check", action="store_true",
         help="Probe backend availability and exit (exit 0 if reachable)",
     )
-    syn.add_argument(
-        "--force", action="store_true",
-        help="Ignore state file, re-synthesize all sessions",
-    )
-    syn.add_argument(
+    syn_mode.add_argument(
         "--estimate", action="store_true",
         help="Print cached-vs-fresh token + dollar estimate without calling a backend (#50)",
     )
-    # #316 — agent-delegate backend helpers.
-    syn.add_argument(
+    # #316 — agent-delegate backend helpers (mutually-exclusive with the
+    # default synthesize-all flow + with --check / --estimate above).
+    syn_mode.add_argument(
         "--list-pending", action="store_true",
         help="List pending prompts awaiting agent synthesis (agent-delegate backend, #316)",
     )
-    syn.add_argument(
+    syn_mode.add_argument(
         "--complete", metavar="UUID", default=None,
         help="Complete a pending synthesis: read body from --body or stdin, rewrite --page in place (#316)",
+    )
+    # --force is orthogonal (modifies the default re-synthesize-all flow)
+    # and stays outside the exclusion group so callers can pass
+    # `synthesize --force` for a forced full re-run.
+    syn.add_argument(
+        "--force", action="store_true",
+        help="Ignore state file, re-synthesize all sessions",
     )
     syn.add_argument(
         "--page", metavar="PATH", default=None,
@@ -1074,6 +881,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--body", metavar="PATH", default=None,
         help="Read synthesized body from this file for --complete (default: stdin)",
     )
+    _add_vault_arg(syn, role="synthesize")
     syn.set_defaults(func=cmd_synthesize)
 
     # query — natural-language graph query
@@ -1086,6 +894,37 @@ def build_parser() -> argparse.ArgumentParser:
     # version
     ver = sub.add_parser("version", help="Print version")
     ver.set_defaults(func=cmd_version)
+
+    # all — run build + graph + export all + lint in sequence
+    all_p = sub.add_parser(
+        "all",
+        help="Run the full pipeline: build → graph → export all → lint",
+    )
+    all_p.add_argument(
+        "--out", type=Path, default=REPO_ROOT / "site",
+        help="Output dir for build + export (default: site/)",
+    )
+    all_p.add_argument(
+        "--search-mode", choices=["auto", "tree", "flat"], default="auto",
+        help="Search index mode passed through to build (default: auto)",
+    )
+    all_p.add_argument(
+        "--graph-engine", choices=["builtin", "graphify"], default="graphify",
+        help="Graph engine passed through to graph (default: graphify)",
+    )
+    all_p.add_argument(
+        "--skip-graph", action="store_true",
+        help="Skip the graph step (useful when graphify is not installed)",
+    )
+    all_p.add_argument(
+        "--fail-fast", action="store_true",
+        help="Stop at the first non-zero step (default: continue, report worst exit code)",
+    )
+    all_p.add_argument(
+        "--strict", action="store_true",
+        help="Exit 2 if lint reports any errors/warnings",
+    )
+    all_p.set_defaults(func=cmd_all)
 
     return p
 

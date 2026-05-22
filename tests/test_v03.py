@@ -29,7 +29,9 @@ def test_pyproject_exists():
     assert p.exists()
     content = p.read_text(encoding="utf-8")
     # Minimal sanity
-    assert 'name = "llmwiki"' in content
+    # Distribution name is `llm-notebook` (the `llmwiki` name was taken on
+    # PyPI). Python module + CLI command remain `llmwiki`.
+    assert 'name = "llm-notebook"' in content
     # Accept any valid semver — bumped to 1.0 in v1.0.0 release
     import re
     assert re.search(r'version = "\d+\.\d+\.\d+', content), "missing version string"
@@ -42,8 +44,14 @@ def test_pyproject_declares_optional_deps():
     content = p.read_text(encoding="utf-8")
     # optional-dependencies section
     assert "[project.optional-dependencies]" in content
-    for opt in ("highlight", "pdf", "dev", "all"):
+    # `pdf` extra was removed in the simplification sweep alongside the
+    # PDF adapter. The remaining optional groups must stay declared.
+    for opt in ("highlight", "dev", "all"):
         assert f"{opt} =" in content, f"missing optional dep group: {opt}"
+    assert "pdf =" not in content, (
+        "pdf optional dep was removed in the simplification sweep; "
+        "don't reintroduce it"
+    )
 
 
 # ─── i18n docs ───────────────────────────────────────────────────────────

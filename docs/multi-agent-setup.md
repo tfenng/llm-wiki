@@ -8,12 +8,11 @@ llmwiki reads sessions from multiple coding agents simultaneously. One `llmwiki 
 |---|---|---|---|
 | Claude Code | `claude_code` | `~/.claude/projects/` | Production |
 | Codex CLI | `codex_cli` | `~/.codex/sessions/` | Production |
-| GitHub Copilot Chat | `copilot-chat` | VS Code workspaceStorage | Production |
-| GitHub Copilot CLI | `copilot-cli` | `~/.copilot/session-state/` | Production |
+| GitHub Copilot Chat | `copilot_chat` | VS Code workspaceStorage | Production |
+| GitHub Copilot CLI | `copilot_cli` | `~/.copilot/session-state/` | Production |
 | Cursor | `cursor` | Cursor IDE workspaceStorage | Scaffold (SQLite parser in progress) |
 | Gemini CLI | `gemini_cli` | `~/.gemini/` | Scaffold (schema TBC) |
 | Obsidian | `obsidian` | Configurable vault paths | Production |
-| PDF | `pdf` | Any `.pdf` dropped into `raw/` | Production |
 
 ## How auto-detection works
 
@@ -37,12 +36,11 @@ Example output:
 Registered adapters:
   claude_code       available: yes  (Claude Code — reads ~/.claude/projects/*/*.jsonl)
   codex_cli         available: yes  (Codex CLI — reads ~/.codex/sessions/**/*.jsonl)
-  copilot-chat      available: no   (GitHub Copilot Chat — reads VS Code workspaceStorage chatSessions)
-  copilot-cli       available: no   (GitHub Copilot CLI — reads ~/.copilot/session-state/*/events.jsonl)
+  copilot_chat      available: no   (GitHub Copilot Chat — reads VS Code workspaceStorage chatSessions)
+  copilot_cli       available: no   (GitHub Copilot CLI — reads ~/.copilot/session-state/*/events.jsonl)
   cursor            available: yes  (Cursor IDE — reads chat history)
   gemini_cli        available: no   (Gemini CLI — reads ~/.gemini/ session history)
   obsidian          available: no   (Obsidian vault)
-  pdf               available: yes  (PDF files)
 ```
 
 ## Per-agent setup
@@ -108,7 +106,7 @@ Override adapter paths in `config.json`:
     "codex_cli": {
       "roots": ["~/custom/codex/sessions"]
     },
-    "copilot-chat": {
+    "copilot_chat": {
       "roots": ["/path/to/vscode/workspaceStorage"]
     },
     "gemini_cli": {
@@ -128,5 +126,5 @@ Override adapter paths in `config.json`:
 1. **Use `--adapter` to test one agent at a time** when debugging sync issues.
 2. **Each agent gets its own project slug** derived from its session store layout, so sessions from different agents never collide.
 3. **The wiki layer is agent-agnostic.** Once sessions are in `raw/`, the wiki ingest treats them identically regardless of which agent produced them.
-4. **Use `llmwiki watch`** to auto-sync across all agents in real time as you work.
+4. **Schedule `llmwiki sync`** via `launchd` / `systemd` / Task Scheduler for periodic auto-sync across all agents (the `llmwiki watch` daemon was removed in v1.2.0 — see `docs/UPGRADING.md`).
 5. **Combine with `.llmwikiignore`** to skip noisy agents or specific projects from any adapter.

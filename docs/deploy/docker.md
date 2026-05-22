@@ -69,7 +69,7 @@ This uses the repo `Dockerfile` and re-builds on every code change.
 ## Image details
 
 - **Base:** `python:3.12-slim` (~45 MB)
-- **Runtime deps:** `markdown` only (stdlib + optional `pypdf` extra)
+- **Runtime deps:** `markdown` only (stdlib + optional `graphifyy` extra)
 - **User:** non-root (`app`, UID 1000) — mounted volumes stay host-owned
 - **Port:** 8765 (exposed + mapped)
 - **Entrypoint:** `python -m llmwiki`
@@ -140,4 +140,3 @@ ports:
 - [GitHub Pages deployment](github-pages.md) — static hosting instead of container
 - [GitLab Pages deployment](gitlab-pages.md)
 - [Vercel / Netlify](vercel-netlify.md)
-- [Scheduled sync](../scheduled-sync.md) — daily auto-sync (outside Docker)

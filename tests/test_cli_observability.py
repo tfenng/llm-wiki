@@ -98,12 +98,15 @@ def test_adapter_status_invalid_config_entry_defaults_to_auto():
 def test_adapters_cli_shows_new_columns():
     cp = _run_cli("adapters")
     assert cp.returncode == 0
-    # Header names present
-    for header in ("name", "default", "configured", "will_fire", "description"):
-        assert header in cp.stdout
-    # Legacy labels no longer present in data rows
-    assert "enabled" not in cp.stdout or "Pass --wide" in cp.stdout
-    # Human-readable column legend at the bottom
+    # #387 U2: column names renamed to present / enabled / active.
+    for header in ("name", "present", "enabled", "active", "description"):
+        assert header in cp.stdout, (
+            f"adapters table missing the {header!r} column header"
+        )
+    # Old column names should be gone — they're confusing without the legend.
+    assert "configured" not in cp.stdout, "old 'configured' column header still rendered"
+    assert "will_fire" not in cp.stdout, "old 'will_fire' column header still rendered"
+    # Human-readable column legend at the bottom describes the new names.
     assert "auto (default)" in cp.stdout
     assert "explicit (enabled:true" in cp.stdout
 
@@ -186,7 +189,7 @@ def test_sync_status_empty_state(tmp_path, monkeypatch, capsys):
     import llmwiki.cli as cli_mod
     import llmwiki.convert as convert_mod
     monkeypatch.setattr(convert_mod, "DEFAULT_STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path); import llmwiki.sync.status as sync_status_mod; monkeypatch.setattr(sync_status_mod, "REPO_ROOT", tmp_path)
     args = _mk_sync_status_args()
     rc = cli_mod.cmd_sync_status(args)
     assert rc == 0
@@ -218,7 +221,7 @@ def test_sync_status_renders_counters_table(tmp_path, monkeypatch, capsys):
     import llmwiki.cli as cli_mod
     import llmwiki.convert as convert_mod
     monkeypatch.setattr(convert_mod, "DEFAULT_STATE_FILE", state_file)
-    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path); import llmwiki.sync.status as sync_status_mod; monkeypatch.setattr(sync_status_mod, "REPO_ROOT", tmp_path)
     rc = cli_mod.cmd_sync_status(_mk_sync_status_args())
     assert rc == 0
     out = capsys.readouterr().out
@@ -241,7 +244,7 @@ def test_sync_status_surfaces_quarantine(tmp_path, monkeypatch, capsys):
     import llmwiki.convert as convert_mod
     monkeypatch.setattr(convert_mod, "DEFAULT_STATE_FILE", state_file)
     monkeypatch.setattr(q, "DEFAULT_QUARANTINE_FILE", quar_file)
-    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path); import llmwiki.sync.status as sync_status_mod; monkeypatch.setattr(sync_status_mod, "REPO_ROOT", tmp_path)
 
     rc = cli_mod.cmd_sync_status(_mk_sync_status_args())
     assert rc == 0
@@ -258,7 +261,7 @@ def test_sync_status_with_recent_logs_events(tmp_path, monkeypatch, capsys):
     import llmwiki.cli as cli_mod
     import llmwiki.convert as convert_mod
     monkeypatch.setattr(convert_mod, "DEFAULT_STATE_FILE", state_file)
-    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path); import llmwiki.sync.status as sync_status_mod; monkeypatch.setattr(sync_status_mod, "REPO_ROOT", tmp_path)
     rc = cli_mod.cmd_sync_status(_mk_sync_status_args(recent=2))
     assert rc == 0
     out = capsys.readouterr().out
@@ -274,7 +277,7 @@ def test_sync_status_corrupt_state_file_is_tolerated(tmp_path, monkeypatch, caps
     import llmwiki.cli as cli_mod
     import llmwiki.convert as convert_mod
     monkeypatch.setattr(convert_mod, "DEFAULT_STATE_FILE", state_file)
-    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli_mod, "REPO_ROOT", tmp_path); import llmwiki.sync.status as sync_status_mod; monkeypatch.setattr(sync_status_mod, "REPO_ROOT", tmp_path)
     rc = cli_mod.cmd_sync_status(_mk_sync_status_args())
     assert rc == 0
 

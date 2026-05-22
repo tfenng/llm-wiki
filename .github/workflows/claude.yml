@@ -32,7 +32,8 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@v1
+        # #sec-14 (#558): SHA-pin — see claude-code-review.yml for the matching note.
+        uses: anthropics/claude-code-action@567fe954a4527e81f132d87d1bdbcc94f7737434  # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -40,11 +41,12 @@ jobs:
           additional_permissions: |
             actions: read
 
+          # Use Opus 4.7 — best model for the @claude interactive surface
+          # (handles refactor requests, "explain this", multi-file edits).
+          # The cost premium is fine here because this fires only when a
+          # human explicitly tags @claude, not on every push.
+          claude_args: '--model claude-opus-4-7'
+
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
-
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr:*)'
 

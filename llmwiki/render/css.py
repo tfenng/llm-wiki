@@ -43,6 +43,12 @@ CSS = """/* llmwiki — god-level docs style */
     --text-muted: #8b9bb5;  /* WCAG AA: 6.97:1 on dark bg */
     --border: #2d2b4a;
     --border-subtle: #1f1d3a;
+    /* #385: --accent #7C3AED on the dark bg #0c0a1d is 4.63:1 — axe
+       flags it as borderline. The lighter shade #a78bfa is 8.5:1 and
+       comfortably above WCAG AA for normal text everywhere it's used
+       (links, active nav, breadcrumbs, blockquote bars, card hovers). */
+    --accent: #a78bfa;
+    --accent-light: #c4b5fd;
     --accent-bg: #1e1a3a;
     --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
     --shadow-card: 0 2px 6px rgba(0, 0, 0, 0.35);
@@ -59,6 +65,8 @@ CSS = """/* llmwiki — god-level docs style */
   --text-muted: #8b9bb5;
   --border: #2d2b4a;
   --border-subtle: #1f1d3a;
+  --accent: #a78bfa;        /* #385: bump for AA contrast on dark bg */
+  --accent-light: #c4b5fd;  /* one step lighter for hover states */
   --accent-bg: #1e1a3a;
   --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
   --shadow-card: 0 2px 6px rgba(0, 0, 0, 0.35);
@@ -74,7 +82,11 @@ a:hover { text-decoration: underline; }
 a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 /* Skip-to-content link — visible only on keyboard focus */
 .skip-link { position: absolute; left: -9999px; top: auto; width: 1px; height: 1px; overflow: hidden; z-index: 999; padding: 8px 16px; background: var(--accent); color: #fff; font-weight: 600; font-size: 0.9rem; border-radius: 0 0 6px 0; text-decoration: none; }
-.skip-link:focus { position: fixed; top: 0; left: 0; width: auto; height: auto; overflow: visible; }
+/* #ui-h1 (#565): explicit focus styles. Reset overflow + width on focus
+   so the link's content actually paints, and add a visible outline so
+   the keyboard-focus ring isn't ambiguous against the accent bg. */
+.skip-link:focus,
+.skip-link:focus-visible { position: fixed; top: 0; left: 0; width: auto; height: auto; overflow: visible; outline: 3px solid #fff; outline-offset: 0; box-shadow: 0 0 0 6px var(--accent); }
 .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
 .muted { color: var(--text-muted); }
 kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-size: 0.72rem; color: var(--text-secondary); background: var(--bg-code); border: 1px solid var(--border); border-radius: 4px; line-height: 1; }
@@ -91,7 +103,10 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 .nav-links { display: flex; align-items: center; gap: 16px; }
 .nav-links a { color: var(--text-secondary); font-size: 0.86rem; font-weight: 500; text-decoration: none; }
 .nav-links a:hover { color: var(--text); text-decoration: none; }
-.nav-links a.active { color: var(--accent); }
+/* #385 S3: --accent is already bumped to #a78bfa in dark mode so the active
+   nav has 8.5:1 contrast there. The underline is kept so the active state
+   doesn't rely on color alone (WCAG 1.4.1 "Use of Color"). */
+.nav-links a.active { color: var(--accent); text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 2px; }
 
 .nav-search-btn { display: flex; align-items: center; gap: 8px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-family: var(--font); color: var(--text-secondary); cursor: pointer; font-size: 0.82rem; transition: all 0.15s; }
 .nav-search-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -103,7 +118,9 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
    the command palette via Cmd+K, and the mobile bottom nav below 767. */
 @media (max-width: 1023px) { .nav-links > a { display: none; } }
 
-.theme-toggle { background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-secondary); transition: all 0.2s; padding: 0; flex-shrink: 0; }
+/* #ui-m3 (#573): bump touch target from 36×36 to 44×44 (Apple HIG +
+   WCAG 2.5.5 minimum). Visual icon stays the same; padding grows. */
+.theme-toggle { background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-secondary); transition: all 0.2s; padding: 0; flex-shrink: 0; }
 .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
 .theme-toggle svg { width: 18px; height: 18px; }
 .theme-toggle .icon-sun { display: none; }
@@ -147,10 +164,17 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 
 /* Code copy button */
 .code-wrap { position: relative; }
-.copy-code-btn { position: absolute; top: 8px; right: 8px; padding: 4px 10px; font-size: 0.72rem; font-weight: 500; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text-secondary); cursor: pointer; font-family: var(--font); opacity: 0; transition: opacity 0.15s; z-index: 2; }
-.code-wrap:hover .copy-code-btn { opacity: 1; }
-.copy-code-btn:hover { border-color: var(--accent); color: var(--accent); }
-.copy-code-btn.copied { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); opacity: 1; }
+/* #ui-m4 (#574) + axe color-contrast follow-up: copy-code-btn was
+   opacity: 0 by default; touch + keyboard users couldn't see it. The
+   first fix used opacity: 0.6 by default but axe flagged the resulting
+   blend (text color × 0.6 over page bg) as 4.5:1 borderline-failing.
+   Switched to full opacity always-visible — no hover/focus state to
+   reveal — and de-emphasised the button via lower-contrast neutral
+   border + muted text instead of opacity. WCAG-clean. #ui-m3 (#573):
+   padding bumped so the hit area lands at the 44×44 minimum. */
+.copy-code-btn { position: absolute; top: 8px; right: 8px; padding: 8px 12px; min-width: 44px; min-height: 44px; font-size: 0.72rem; font-weight: 500; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); cursor: pointer; font-family: var(--font); transition: border-color 0.15s, color 0.15s; z-index: 2; }
+.copy-code-btn:hover, .copy-code-btn:focus-visible { border-color: var(--accent); color: var(--accent); }
+.copy-code-btn.copied { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
 
 /* Content */
 .content { color: var(--text); font-size: 0.95rem; max-width: 100%; overflow-wrap: break-word; word-wrap: break-word; min-width: 0; }
@@ -190,11 +214,38 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 .article pre code.hljs { padding: 14px 16px; display: block; }
 .article pre { padding: 0; }
 .article :not(pre) > code.hljs { background: transparent; padding: 0; }
-/* a11y: GitHub hljs theme keyword #d73a49 only has 4.17:1 on --bg-code;
-   override to #c23a40 (4.82:1) for WCAG AA compliance in light mode. */
+/* a11y (#385 S2): the GitHub hljs theme uses several token colors that fail
+   WCAG AA 4.5:1 contrast against our --bg-code background:
+     hljs-keyword     #d73a49 → 4.17:1 (light) → #c23a40 (4.82:1)
+     hljs-built_in    #005cc5 → 4.34:1 (light) → #0050a8 (4.78:1)
+     hljs-number      #005cc5 → 4.34:1 (light) → #0050a8 (4.78:1)
+     hljs-literal     #005cc5 → 4.34:1 (light) → #0050a8 (4.78:1)
+     hljs-title       #6f42c1 → 4.40:1 (light) → #5c34a3 (4.65:1)
+     hljs-attr        #005cc5 → 4.34:1 (light) → #0050a8 (4.78:1)
+     hljs-symbol      #e36209 → 4.05:1 (light) → #c8530a (4.51:1)
+   Dark-theme tokens stay on the hljs-dark stylesheet which already passes. */
 :root:not([data-theme="dark"]) .hljs-keyword,
 :root:not([data-theme="dark"]) .hljs-type { color: #c23a40; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .hljs-keyword, :root:not([data-theme="light"]) .hljs-type { color: unset; } }
+:root:not([data-theme="dark"]) .hljs-built_in,
+:root:not([data-theme="dark"]) .hljs-number,
+:root:not([data-theme="dark"]) .hljs-literal,
+:root:not([data-theme="dark"]) .hljs-attr { color: #0050a8; }
+:root:not([data-theme="dark"]) .hljs-title,
+:root:not([data-theme="dark"]) .hljs-title.function_,
+:root:not([data-theme="dark"]) .hljs-class .hljs-title { color: #5c34a3; }
+:root:not([data-theme="dark"]) .hljs-symbol,
+:root:not([data-theme="dark"]) .hljs-bullet { color: #c8530a; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .hljs-keyword,
+  :root:not([data-theme="light"]) .hljs-type,
+  :root:not([data-theme="light"]) .hljs-built_in,
+  :root:not([data-theme="light"]) .hljs-number,
+  :root:not([data-theme="light"]) .hljs-literal,
+  :root:not([data-theme="light"]) .hljs-attr,
+  :root:not([data-theme="light"]) .hljs-title,
+  :root:not([data-theme="light"]) .hljs-symbol,
+  :root:not([data-theme="light"]) .hljs-bullet { color: unset; }
+}
 
 /* Cards */
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin: 16px 0; }
@@ -202,6 +253,30 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 .card:hover { border-color: var(--accent); text-decoration: none; transform: translateY(-1px); box-shadow: var(--shadow-card-hover); }
 .card-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 4px; color: var(--text); }
 .card-meta { font-size: 0.82rem; color: var(--text-secondary); }
+/* #455: small muted activity date range under the meta line. */
+.card-date-range { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+/* #471: human-readable session description rendered as a subtitle on
+   session detail pages and as a small line beneath the slug in the
+   sessions index table. */
+.session-description { font-size: 0.95rem; color: var(--text-secondary); margin: -8px 0 16px; line-height: 1.5; }
+.session-cell-desc { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* #476: richer tool-result collapsible card. Renders as
+   `[badge] preview · N lines · X chars` so the user knows what's
+   inside without expanding. The badge tints by outcome. */
+.collapsible-result { margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; padding: 0; background: var(--bg-card); }
+.collapsible-result > summary { padding: 8px 12px; cursor: pointer; list-style: none; font-size: 0.85rem; line-height: 1.5; }
+.collapsible-result > summary::-webkit-details-marker { display: none; }
+.collapsible-result > summary:hover { background: var(--bg-alt); }
+.collapsible-result[open] > summary { border-bottom: 1px solid var(--border); }
+.collapsible-result > *:not(summary) { padding: 8px 12px; }
+.tool-result-badge { display: inline-block; font-size: 0.7rem; font-weight: 600; padding: 1px 6px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.04em; }
+.tool-result-ok    { background: rgba(5,150,105,0.12); color: #047857; }
+.tool-result-error { background: rgba(220,38,38,0.12); color: #991B1B; }
+:root[data-theme="dark"] .tool-result-ok    { background: rgba(52,211,153,0.18); color: #34D399; }
+:root[data-theme="dark"] .tool-result-error { background: rgba(248,113,113,0.18); color: #F87171; }
+.tool-result-preview { color: var(--text); font-family: var(--mono); font-size: 0.82rem; }
+.tool-result-meta    { font-size: 0.78rem; }
+.collapsible-result.outcome-error { border-color: rgba(220,38,38,0.4); }
 .card-stats { font-size: 0.78rem; margin-top: 6px; }
 .card-badge { margin-top: 8px; }
 
@@ -217,7 +292,7 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
   background: currentColor;
 }
 .fresh-green   { color: #15803d; background: #dcfce7; border-color: #86efac; }
-.fresh-yellow  { color: #b45309; background: #fef3c7; border-color: #fcd34d; }
+.fresh-yellow  { color: #92400e; background: #fef3c7; border-color: #fcd34d; }
 .fresh-red     { color: #b91c1c; background: #fee2e2; border-color: #fca5a5; }
 .fresh-unknown { color: #6b7280; background: #f3f4f6; border-color: #d1d5db; }
 :root[data-theme="dark"] .fresh-green   { color: #86efac; background: #052e16; border-color: #065f46; }
@@ -235,9 +310,30 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 .sub-section summary:hover { color: var(--accent); }
 
 /* Sessions table */
-.table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); }
-.sessions-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-.sessions-table thead { position: sticky; top: 56px; background: var(--bg-alt); z-index: 1; }
+/* #ui-h10 (#569): isolation: isolate creates a stacking context so
+   the sticky thead doesn't lose z-order against the page nav blur on
+   iOS Safari. */
+.table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); isolation: isolate; }
+/* #452: table-layout: fixed pins column widths from <colgroup> so sticky <thead>
+   columns stay aligned with <tbody> as the user scrolls. min-width keeps the
+   table horizontally scrollable on narrow viewports rather than crushing cols. */
+.sessions-table { width: 100%; min-width: 880px; border-collapse: collapse; font-size: 0.88rem; table-layout: fixed; }
+.sessions-table td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions-table td a { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+/* #ui-h10 (#569): iOS Safari needs -webkit-sticky and a stacking
+   context (isolation: isolate) on the table parent so the sticky
+   thead doesn't lose its z-axis ordering against the nav blur. The
+   `transform: translateZ(0)` gives older WebKit a hardware layer so
+   the sticky cells don't get repainted as plain rows during scroll. */
+.sessions-table thead {
+  position: -webkit-sticky;
+  position: sticky;
+  top: 56px;
+  background: var(--bg-alt);
+  z-index: 1;
+  transform: translateZ(0);
+}
+/* (.table-wrap isolation rule moved up to the main definition above) */
 .sessions-table th, .sessions-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
 .sessions-table th { background: var(--bg-alt); font-weight: 600; color: var(--text-secondary); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
 .sessions-table tr:last-child td { border-bottom: none; }
@@ -261,8 +357,14 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 .synthesis p { margin: 10px 0; }
 
 /* Command palette */
+/* #478: was gated by `[aria-hidden="false"]`. axe-core flags that as
+   `aria-hidden-focus` because focusable children inside an aria-hidden
+   element are unreachable to AT users. Now toggled via `.open` class
+   that JS sets when the dialog is active; aria-hidden is removed
+   entirely while open and `inert` is applied to sibling chrome to
+   keep AT focus inside the dialog (#479). */
 .palette { position: fixed; inset: 0; z-index: 300; display: none; }
-.palette[aria-hidden="false"] { display: block; }
+.palette.open { display: block; }
 .palette-backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, 0.5); backdrop-filter: blur(4px); }
 .palette-modal { position: relative; max-width: 600px; margin: 10vh auto 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
 .palette-header { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
@@ -279,8 +381,17 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 .palette-footer { display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--border); font-size: 0.75rem; background: var(--bg-alt); }
 
 /* Help dialog */
+/* #478: same .open class swap as the palette — aria-hidden gating
+   was an axe-core violation for any focusable child. */
+/* #ui-l8 (#581): hint + example paragraphs in the help dialog moved
+   from inline style="" to these classes so the dialog stays
+   strict-CSP-friendly. */
+.help-dialog-hint { font-size: 0.82rem; margin: 4px 0 8px; }
+.help-dialog-example { font-size: 0.82rem; margin-top: 6px; }
+/* 404 page link list — was inline style="list-style:disc;...". */
+.not-found-links { list-style: disc; padding-left: 24px; margin: 12px 0; }
 .help-dialog { position: fixed; inset: 0; z-index: 250; display: none; }
-.help-dialog[aria-hidden="false"] { display: block; }
+.help-dialog.open { display: block; }
 .help-modal { position: relative; max-width: 420px; margin: 15vh auto 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; box-shadow: var(--shadow); }
 .help-modal h2 { font-size: 1.1rem; margin-bottom: 16px; }
 .help-modal table { width: 100%; font-size: 0.88rem; margin-bottom: 16px; }
@@ -408,7 +519,7 @@ kbd { display: inline-block; padding: 2px 6px; font-family: var(--mono); font-si
 .token-ratio-label { color: var(--text-secondary); }
 .token-ratio-value { font-weight: 600; font-size: 0.95rem; }
 .token-ratio-value.tier-green   { color: #15803d; }
-.token-ratio-value.tier-yellow  { color: #b45309; }
+.token-ratio-value.tier-yellow  { color: #92400e; }
 .token-ratio-value.tier-red     { color: #b91c1c; }
 .token-ratio-value.tier-unknown { color: var(--text-secondary); }
 :root[data-theme="dark"] .token-ratio-value.tier-green  { color: #86efac; }
@@ -576,13 +687,18 @@ a.topic-chip:hover {
   border: 1px solid;
   vertical-align: middle;
 }
+/* #459: light-theme agent text colors darkened to clear WCAG AA on the
+   alpha-blended backgrounds. Originals (codex #059669, copilot #2563EB,
+   cursor #D97706, gemini #DC2626) measured 2.86–4.49:1 on the effective
+   10%-alpha tint, all under the 4.5:1 small-text threshold. The border
+   tint is decorative so its rgba(color, 0.3) value is unchanged. */
 .agent-claude   { color: #7C3AED; background: rgba(124,58,237,0.1); border-color: rgba(124,58,237,0.3); }
-.agent-codex    { color: #059669; background: rgba(5,150,105,0.1); border-color: rgba(5,150,105,0.3); }
-.agent-copilot  { color: #2563EB; background: rgba(37,99,235,0.1); border-color: rgba(37,99,235,0.3); }
-.agent-cursor   { color: #D97706; background: rgba(217,119,6,0.1); border-color: rgba(217,119,6,0.3); }
-.agent-gemini   { color: #DC2626; background: rgba(220,38,38,0.1); border-color: rgba(220,38,38,0.3); }
+.agent-codex    { color: #047857; background: rgba(5,150,105,0.1); border-color: rgba(5,150,105,0.3); }
+.agent-copilot  { color: #1E40AF; background: rgba(37,99,235,0.1); border-color: rgba(37,99,235,0.3); }
+.agent-cursor   { color: #92400E; background: rgba(217,119,6,0.1); border-color: rgba(217,119,6,0.3); }
+.agent-gemini   { color: #991B1B; background: rgba(220,38,38,0.1); border-color: rgba(220,38,38,0.3); }
 .agent-obsidian { color: #7E22CE; background: rgba(126,34,206,0.1); border-color: rgba(126,34,206,0.3); }
-.agent-pdf      { color: #B91C1C; background: rgba(185,28,28,0.1); border-color: rgba(185,28,28,0.3); }
+/* Simplification sweep removed the PDF adapter — agent-pdf rule deleted. */
 .agent-unknown  { color: #6B7280; background: rgba(107,114,128,0.1); border-color: rgba(107,114,128,0.3); }
 :root[data-theme="dark"] .agent-claude   { color: #A78BFA; background: rgba(167,139,250,0.15); border-color: rgba(167,139,250,0.3); }
 :root[data-theme="dark"] .agent-codex    { color: #34D399; background: rgba(52,211,153,0.15); border-color: rgba(52,211,153,0.3); }
@@ -623,6 +739,46 @@ mark { background: var(--accent-bg); color: var(--accent); padding: 0 2px; borde
 .toc-sidebar .toc-link.active { color: var(--accent); border-left-color: var(--accent); background: var(--bg-alt); font-weight: 500; }
 @media (min-width: 1340px) { .toc-sidebar { display: block; } }
 
+/* #460: Hamburger button + slide-down drawer for tablet/mobile.
+   Desktop nav-links row hides at <1024 (existing rule), so without
+   this drawer Graph / Docs / Changelog were unreachable on mobile. */
+.nav-hamburger {
+  display: none;  /* shown only when nav-links row is hidden */
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 6px; width: 44px; height: 44px;
+  align-items: center; justify-content: center;
+  cursor: pointer; color: var(--text-secondary);
+  padding: 0; margin-left: auto;
+  transition: all 0.15s;
+}
+.nav-hamburger:hover { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 1023px) { .nav-hamburger { display: inline-flex; } }
+/* #v1378-review: forced-colors (Windows High Contrast) mode overrides
+   our custom palette with the system one. Without this, the hamburger
+   button's border (var(--border)) is ignored and the button visually
+   disappears against the nav background. Use system-named colors so
+   it stays visible. */
+@media (forced-colors: active) {
+  .nav-hamburger { border: 2px solid ButtonText; }
+  .nav-hamburger:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+}
+.nav-drawer {
+  display: none;
+  position: absolute; left: 0; right: 0; top: 100%;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  flex-direction: column; padding: 8px 16px 12px;
+  z-index: 99;
+}
+.nav-drawer:not([hidden]) { display: flex; }
+.nav-drawer-link {
+  display: block; padding: 12px 12px;
+  color: var(--text); font-size: 0.95rem; font-weight: 500;
+  text-decoration: none; border-radius: 6px;
+}
+.nav-drawer-link:hover, .nav-drawer-link:focus-visible { background: var(--bg-alt); text-decoration: none; }
+.nav-drawer-link.active { color: var(--accent); }
+
 /* Mobile bottom navigation */
 .mobile-bottom-nav { display: none; }
 /* Mobile bottom nav breakpoint at 767 matches the common 768 tablet cutoff
@@ -658,11 +814,21 @@ mark { background: var(--accent-bg); color: var(--accent); padding: 0 2px; borde
     --text: #000; --text-secondary: #333; --text-muted: #555;
     --border: #ccc; --accent: #000;
   }
+  /* #ui-l1 (#578): keep breadcrumbs in print so a printed page
+     retains its location context. #ui-l3 (#579): keep activity
+     heatmap + token charts + related-pages too — useful when an
+     offline reader needs to follow a hardcopy. Removed from the
+     hide-list. */
   .nav, .footer, .palette, .help-dialog, .session-actions, .filter-bar,
   .progress-bar, .nav-search-btn, .theme-toggle, .copy-code-btn,
   .wikilink-preview, .timeline-block, .toc-sidebar, .mobile-bottom-nav,
-  .related-pages, .activity-heatmap, .tool-chart-card, .token-card, .token-stat-grid, .model-warnings, .timeline-card, .recently-updated-card, .deep-link, .breadcrumbs,
+  .deep-link,
   .meta-tools { display: none !important; }
+  /* Breadcrumbs + heatmap + charts kept on print, but rendered
+     monochrome to save ink. */
+  .breadcrumbs { color: #333; }
+  .activity-heatmap { filter: grayscale(100%); }
+  .related-pages { border-top: 1px solid #ccc; padding-top: 8pt; margin-top: 12pt; page-break-inside: avoid; }
   body { background: #fff; color: #000; font-size: 11pt; padding-bottom: 0; }
   .hero { padding: 12px 0 8px; background: #fff; border: none; }
   .hero h1 { font-size: 18pt; color: #000; }

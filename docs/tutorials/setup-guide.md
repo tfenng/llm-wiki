@@ -268,11 +268,13 @@ Press `Cmd+K` (macOS) or `Ctrl+K` (Linux/Windows). Try:
 ### 4.5 Export for other tools
 
 ```bash
-llmwiki export-obsidian --vault ~/Documents/"Obsidian Vault"   # copy mode
-llmwiki export-qmd --out /tmp/my-qmd                            # hybrid search
-llmwiki export-marp --topic "my-topic"                          # slide deck
-llmwiki export llms-full-txt                                    # paste into any LLM
+llmwiki sync --vault ~/Documents/"Obsidian Vault"   # vault sync (replaces removed export-obsidian)
+llmwiki export llms-full-txt                          # paste into any LLM
+llmwiki export jsonld                                 # schema.org graph
+llmwiki export rss                                    # RSS 2.0 feed
 ```
+
+> The `export-obsidian`, `export-qmd`, and `export-marp` subcommands were removed in v1.2.0. See `docs/UPGRADING.md` for migration paths.
 
 ---
 
@@ -297,20 +299,23 @@ Shows default availability + configured state. Enable opt-in adapters in
 {
   "meeting": { "enabled": true, "source_dirs": ["~/Meetings"] },
   "jira": { "enabled": true, "server": "https://me.atlassian.net", "email": "me@x.com", "api_token": "..." },
-  "pdf": { "enabled": true, "source_dirs": ["~/Documents/PDFs"] },
   "web_clipper": { "enabled": true, "watch_dir": "raw/web" }
 }
 ```
 
-### 5.2 Share skills across agents
+> The `pdf` adapter that used to live here was removed in the simplification sweep.
+
+### 5.2 Share slash commands across agents
 
 ```bash
-llmwiki install-skills
+mkdir -p ~/.claude/commands
+cp .claude/commands/wiki-*.md ~/.claude/commands/
 ```
 
-Mirrors `.claude/skills/` into `.codex/skills/` and `.agents/skills/` so
-Claude Code, Codex CLI, and any universal-standard agent discover the same
-llmwiki skills.
+Copies the `.claude/commands/wiki-*.md` files into your global Claude
+Code commands dir. For Codex CLI / Cursor / other agents, copy them
+into the appropriate skill directory for that tool — the file format
+is portable.
 
 ### 5.3 Cross-platform paths
 
@@ -330,7 +335,6 @@ manually.
 - **[Obsidian integration guide](../obsidian-integration.md)** — plugins + config
 - **[Architecture](../architecture.md)** — 3-layer Karpathy + 8-layer build
 - **[Configuration](../configuration.md)** — every tuning knob
-- **[Scheduled sync](../scheduled-sync.md)** — daily auto-sync setup per OS
 - **[Privacy](../privacy.md)** — redaction rules + `.llmwikiignore`
 
 If you hit a snag, check [GitHub Issues](https://github.com/Pratiyush/llm-wiki/issues) or file a new one.

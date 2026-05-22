@@ -43,7 +43,7 @@ llmwiki runs two interchangeable ways. Pick one, start — you can switch later.
 
 - **[Claude Code](tutorials/03-use-with-claude-code.md)** — slash commands, session metadata, `/wiki-ingest`, `/wiki-sync`, `/wiki-query`.
 - **[Codex CLI](tutorials/04-use-with-codex-cli.md)** — sync from `~/.codex/sessions/`, live-session filtering.
-- *Adapter reference:* [Claude Code](adapters/claude-code.md) · [Codex CLI](adapters/codex-cli.md) · [Cursor](adapters/cursor.md) · [Gemini CLI](adapters/gemini-cli.md) · [Copilot](adapters/copilot.md) · [Obsidian](adapters/obsidian.md) · [OpenCode / OpenClaw](adapters/opencode.md) · [ChatGPT](adapters/chatgpt.md) · [Jira](adapters/jira.md) · [Meeting transcripts](adapters/meeting.md) · [PDF](adapters/pdf.md).
+- *Adapter reference:* [Claude Code](adapters/claude-code.md) · [Codex CLI](adapters/codex-cli.md) · [Cursor](adapters/cursor.md) · [Gemini CLI](adapters/gemini-cli.md) · [Copilot](adapters/copilot.md) · [Obsidian](adapters/obsidian.md) · [OpenCode / OpenClaw](adapters/opencode.md) · [ChatGPT](adapters/chatgpt.md).
 
 ---
 
@@ -112,5 +112,6 @@ out of the way. The only third-party runtime dependency is `markdown`.
 
 ## What's new
 
-See the **[CHANGELOG](https://github.com/Pratiyush/llm-wiki/blob/master/CHANGELOG.md)**. Latest tagged release:
-[v1.1.0-rc6](https://github.com/Pratiyush/llm-wiki/releases/tag/v1.1.0-rc6).
+See the **[CHANGELOG](https://github.com/Pratiyush/llm-wiki/blob/master/CHANGELOG.md)**. Latest tagged release: **v{{__llmwiki_version__}}**.
+
+> The version above is substituted from `llmwiki/__init__.py:__version__` at build time, so this hub stays current on every release without a manual edit (#457).

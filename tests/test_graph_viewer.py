@@ -131,11 +131,24 @@ def test_template_has_cluster_toggle():
     assert "network.cluster(" in HTML_TEMPLATE
 
 
-def test_template_has_theme_toggle_and_localstorage():
-    assert 'id="theme-toggle"' in HTML_TEMPLATE
-    # Must persist the user's choice across reloads
-    assert "localStorage.setItem('theme'" in HTML_TEMPLATE
-    assert "localStorage.getItem('theme'" in HTML_TEMPLATE
+def test_template_has_theme_toggle_and_localstorage(tmp_path: Path):
+    # #456: the theme toggle now lives in the SITE NAV (injected at
+    # render time by write_html). The HTML_TEMPLATE itself only carries
+    # the pre-paint reader; the click handler + setItem ship via the
+    # site script.js. We verify the rendered output here so the
+    # cross-page theme sync contract still holds end-to-end.
+    g = {"nodes": [], "edges": [],
+         "stats": {"total_pages": 0, "total_edges": 0, "orphans": [], "top_linked": []}}
+    out = tmp_path / "g.html"
+    write_html(g, out)
+    rendered = out.read_text(encoding="utf-8")
+    assert 'id="theme-toggle"' in rendered, (
+        "rendered graph.html must expose a theme toggle (now via the site nav)"
+    )
+    # Pre-paint reader still in the template head.
+    assert "localStorage.getItem('llmwiki-theme')" in HTML_TEMPLATE
+    # The setItem half lives in script.js (loaded by the rendered page).
+    assert 'src="script.js"' in rendered
 
 
 def test_template_uses_css_vars_for_theme():
@@ -197,10 +210,13 @@ def test_write_html_escapes_closing_script_tag(tmp_path: Path):
     out = tmp_path / "g.html"
     write_html(g, out)
     text = out.read_text(encoding="utf-8")
-    # Two real </script> tags exist in the template (CDN loader +
-    # inline block). A third would mean the </script> inside the
-    # label injected out of the payload — catch that.
-    assert text.count("</script>") == 2
+    # Four real </script> tags exist in the rendered output now: the
+    # #477 pre-paint inline block in <head>, the CDN loader, the
+    # site script.js loader (#456 — graph isn't a dead end anymore),
+    # and the main inline graph script. A fifth would mean the
+    # </script> inside the label injected out of the payload — catch
+    # that.
+    assert text.count("</script>") == 4
     # And the escaped form should be present inside the JSON payload.
     assert "<\\/script>" in text
 
@@ -300,13 +316,18 @@ def test_html_template_size_budget():
     )
 
 
-def test_graph_html_has_back_to_site_link():
-    """#268: graph.html used to be a dead end — no way to navigate back
-    to the live site without the browser back button."""
-    from llmwiki.graph import HTML_TEMPLATE
-    assert 'id="back-to-site"' in HTML_TEMPLATE, (
-        "graph.html should have a back-to-site link (see #268)"
-    )
-    assert 'href="index.html"' in HTML_TEMPLATE, (
-        "back-to-site link should point at index.html"
-    )
+def test_graph_html_has_navigation_back_to_site(tmp_path: Path):
+    """#268 was satisfied by a lightweight back-to-site shim. #456 went
+    further — the full site nav is now injected at render time, which
+    subsumes the shim. Regression contract: the rendered graph.html
+    must reach the home page via at least one Home link in the nav."""
+    g = {"nodes": [], "edges": [],
+         "stats": {"total_pages": 0, "total_edges": 0, "orphans": [], "top_linked": []}}
+    out = tmp_path / "g.html"
+    write_html(g, out)
+    text = out.read_text(encoding="utf-8")
+    assert '<header class="nav">' in text, "site nav missing from rendered graph"
+    # Find the Home link inside the nav.
+    nav_block = text[text.find('<header class="nav">') : text.find("</header>")]
+    assert 'href="index.html"' in nav_block, "Home link missing from injected nav"
+    assert ">Home</a>" in nav_block

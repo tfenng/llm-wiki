@@ -47,12 +47,10 @@ class CodexCliAdapter(BaseAdapter):
     def session_store_path(self):  # type: ignore[override]
         return self.roots
 
-    @classmethod
-    def is_available(cls) -> bool:
-        for p in cls.DEFAULT_ROOTS:
-            if Path(p).expanduser().exists():
-                return True
-        return False
+    # #496: is_available() inherited from BaseAdapter — it now creates
+    # a temp instance and reads self.session_store_path through the
+    # @property below. Was a duplicate scan over DEFAULT_ROOTS; same
+    # result, less code.
 
     def discover_sessions(self) -> list[Path]:
         out: list[Path] = []
@@ -89,7 +87,7 @@ class CodexCliAdapter(BaseAdapter):
                 for line in f:
                     try:
                         r = json.loads(line.strip())
-                    except (ValueError, json.JSONDecodeError):
+                    except ValueError:
                         continue
                     if r.get("type") == "session_meta":
                         cwd = r.get("payload", {}).get("cwd", "")
@@ -219,4 +217,10 @@ class CodexCliAdapter(BaseAdapter):
         return out
 
     def is_subagent(self, path: Path) -> bool:
-        return "subagent" in path.name or "agent-" in path.name
+        """Codex CLI has no sub-agent concept (#406). Returns False
+        unconditionally. The previous substring heuristic produced
+        false positives on any project named e.g. ``subagent-runner``
+        or any path containing ``agent-`` (which is also a common
+        prefix in user code).
+        """
+        return False

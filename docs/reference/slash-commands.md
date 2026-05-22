@@ -11,11 +11,11 @@ what it does, what it runs under the hood, and a realistic invocation
 example. Use these inside **Claude Code** — Codex CLI picks the same
 files up via `install-skills`.
 
-Summary of **17 commands in 4 groups**:
+Summary of **18 commands in 4 groups**:
 
 | Group | Commands |
 |---|---|
-| **Wiki pipeline** (13) | `/wiki-init` `/wiki-sync` `/wiki-ingest` `/wiki-query` `/wiki-update` `/wiki-lint` `/wiki-candidates` `/wiki-synthesize` `/wiki-graph` `/wiki-reflect` `/wiki-build` `/wiki-serve` `/wiki-export-marp` |
+| **Wiki pipeline** (14) | `/wiki-init` `/wiki-sync` `/wiki-ingest` `/wiki-query` `/wiki-update` `/wiki-lint` `/wiki-candidates` `/wiki-synthesize` `/wiki-graph` `/wiki-reflect` `/wiki-build` `/wiki-serve` `/wiki-export-marp` `/wiki-all` |
 | **Governance / maintainer** (4) | `/maintainer` `/release` `/review-pr` `/triage-issue` |
 
 ---
@@ -355,6 +355,29 @@ Claude will pass `--host 0.0.0.0`.
 
 ---
 
+### `/wiki-all`
+
+**What:** run the full pipeline end-to-end — build → graph → export all → lint.
+
+**Wraps:** `python3 -m llmwiki all`.
+
+**When to use:** after `/wiki-sync`, when you want a CI-ready site in one shot
+instead of chaining `/wiki-build` + `/wiki-graph` + `/wiki-lint` yourself.
+
+**Example:**
+
+```
+/wiki-all
+/wiki-all --graph-engine builtin
+/wiki-all --skip-graph --strict
+```
+
+Pass `--strict` to turn any lint warning into a non-zero exit, which is
+exactly what CI wants. Pass `--skip-graph` or `--graph-engine builtin`
+when the optional Graphify backend is not installed.
+
+---
+
 ## Governance / maintainer
 
 ### `/maintainer`
@@ -403,17 +426,10 @@ llmwiki triage rules.
 The repo ships `.claude/commands/*.md` — Claude Code picks them up
 automatically when it opens the repo (no separate install step).
 
-For **Codex CLI / Cursor / Gemini CLI / other agents**, mirror the
-commands with:
-
-```bash
-python3 -m llmwiki install-skills
-```
-
-That creates symlinks under `.codex/skills/` and `.agents/skills/` so
-every agent sees the same commands.
-
-See the **[CLI reference — install-skills](cli.md#install-skills--mirror-claudeskills-into-sibling-agent-paths)**.
+For **Codex CLI / Cursor / Gemini CLI / other agents**, copy the
+`.claude/commands/wiki-*.md` files into the corresponding skill
+directory for that agent (typically `.codex/skills/` or
+`.agents/skills/`) — the file format is portable across agents.
 
 ---
 

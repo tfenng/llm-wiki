@@ -83,21 +83,6 @@ python3 -m llmwiki graph [options]
 |---|---|---|---|
 | `--format` | `json\|html\|both` | `both` | Output format |
 
-### `llmwiki watch`
-
-Watch agent session stores and auto-sync when files change.
-
-```bash
-python3 -m llmwiki watch [options]
-```
-
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--adapter` | `name...` | all available | Adapter(s) to watch |
-| `--interval` | `float` | `5.0` | Polling interval in seconds |
-| `--debounce` | `float` | `10.0` | Debounce window in seconds |
-| `--dry-run` | flag | off | Preview without writing |
-
 ### `llmwiki export`
 
 Export AI-consumable formats from the built site.
@@ -108,96 +93,29 @@ python3 -m llmwiki export <format> [options]
 
 | Positional | Values |
 |---|---|
-| `format` | `llms-txt`, `llms-full-txt`, `jsonld`, `sitemap`, `rss`, `robots`, `ai-readme`, `all` |
+| `format` | `llms-txt`, `llms-full-txt`, `jsonld`, `sitemap`, `rss`, `robots`, `ai-readme`, `marp`, `all` |
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--out` | `path` | `./site` | Output directory |
+| `--topic` | `string` | none | Topic filter (used by `marp` format) |
 
-### `llmwiki export-obsidian`
+### `llmwiki all` (v1.2)
 
-Export the compiled wiki into an Obsidian vault.
+Run the full pipeline: build → graph → export all → lint.
 
 ```bash
-python3 -m llmwiki export-obsidian --vault <path> [options]
+python3 -m llmwiki all [options]
 ```
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--vault` | `path` | required | Path to the Obsidian vault root |
-| `--subfolder` | `string` | `LLM Wiki` | Subfolder name inside the vault |
-| `--clean` | flag | off | Delete the target subfolder before copying |
-| `--dry-run` | flag | off | Preview without writing |
-
-### `llmwiki export-marp`
-
-Generate a Marp slide deck from wiki content matching a topic.
-
-```bash
-python3 -m llmwiki export-marp --topic <topic> [options]
-```
-
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--topic` | `string` | required | Topic to search for in the wiki |
-| `--out` | `path` | `wiki/exports/<topic>.marp.md` | Output path |
-| `--wiki` | `path` | `./wiki` | Wiki directory |
-
-### `llmwiki export-qmd`
-
-Export the wiki as a self-contained qmd collection.
-
-```bash
-python3 -m llmwiki export-qmd --out <dir> [options]
-```
-
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--out` | `path` | required | Output directory |
-| `--source-wiki` | `path` | `./wiki` | Source wiki directory |
-| `--collection` | `string` | `llmwiki` | Collection name in qmd.yaml |
-
-### `llmwiki eval`
-
-Run structural eval checks over `wiki/`.
-
-```bash
-python3 -m llmwiki eval [options]
-```
-
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--check` | `name...` | all | Run only these named checks |
-| `--json` | flag | off | Print JSON to stdout |
-| `--out` | `path` | none | Write JSON report to this path |
-| `--fail-below` | `int` | `0` | Exit non-zero if score % < this |
-
-### `llmwiki check-links`
-
-Verify every internal link in `site/` resolves to an existing file.
-
-```bash
-python3 -m llmwiki check-links [options]
-```
-
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--site-dir` | `path` | `./site` | Site directory to check |
-| `--fail-on-broken` | flag | off | Exit non-zero if broken links found |
-| `--limit` | `int` | `20` | Max broken links to report |
-
-### `llmwiki manifest`
-
-Build `site/manifest.json` with SHA-256 hashes and perf budget check.
-
-```bash
-python3 -m llmwiki manifest [options]
-```
-
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--site-dir` | `path` | `./site` | Site directory |
-| `--fail-on-violations` | flag | off | Exit non-zero if budget is exceeded |
+| `--out` | `path` | `./site` | Output directory |
+| `--search-mode` | `auto/tree/flat` | `auto` | Forwarded to build |
+| `--graph-engine` | `builtin/graphify` | `graphify` | Forwarded to graph |
+| `--skip-graph` | flag | off | Skip the graph step |
+| `--strict` | flag | off | Exit 2 on any lint error or warning (CI gate) |
+| `--fail-fast` | flag | off | Stop at first non-zero step |
 
 ### `llmwiki version`
 
@@ -289,10 +207,6 @@ cp examples/sessions_config.json config.json
 | `synthesis.ollama` | `base_url` | string | `"http://127.0.0.1:11434"` | Ollama HTTP endpoint |
 | `synthesis.ollama` | `timeout` | int (s) | 60 | Per-request timeout |
 | `synthesis.ollama` | `max_retries` | int | 3 | Exponential-backoff retry count on 5xx / timeout |
-| `pdf` | `enabled` | bool | false | Opt-in; non-AI adapter (#326) |
-| `pdf` | `source_dirs` | list | `["~/Documents/PDFs"]` | Directories to scan |
-| `pdf` | `min_pages` | int | 1 | Skip PDFs with fewer pages |
-| `pdf` | `max_pages` | int | 500 | Skip PDFs with more pages (cost guard) |
 | `meeting` | `enabled` | bool | false | Opt-in; non-AI adapter |
 | `meeting` | `source_dirs` | list | `["~/Meetings"]` | Directories to scan |
 | `meeting` | `extensions` | list | `[".vtt", ".srt"]` | File extensions to consider |
@@ -308,13 +222,6 @@ cp examples/sessions_config.json config.json
 | `web_clipper` | `watch_dir` | string | `"raw/web"` | Directory to watch |
 | `web_clipper` | `extensions` | list | `[".md"]` | File extensions to pick up |
 | `web_clipper` | `auto_queue` | bool | true | Auto-add to `.llmwiki-queue.json` |
-| `scheduled_sync` | `enabled` | bool | false | Generate OS-native scheduled task via `llmwiki schedule` |
-| `scheduled_sync` | `cadence` | enum | `"daily"` | `daily` / `weekly` / `hourly` |
-| `scheduled_sync` | `hour` | int | 3 | 0–23 (used by daily+weekly) |
-| `scheduled_sync` | `minute` | int | 0 | 0–59 |
-| `scheduled_sync` | `weekday` | int | 1 | 0=Sunday … 6=Saturday (used by weekly) |
-| `scheduled_sync` | `working_dir` | string | repo root | Directory for the scheduled run |
-| `scheduled_sync` | `llmwiki_bin` | string | auto | `llmwiki` executable path (resolved from `which`) |
 
 ## Environment variables
 
@@ -350,8 +257,8 @@ Each adapter can be configured in the `adapters` section of `config.json`. The k
 |---|---|---|---|
 | Claude Code | `claude_code` | yes (default on) | `roots` |
 | Codex CLI | `codex_cli` | yes (default on) | `roots` |
-| Copilot Chat | `copilot-chat` | yes (default on) | `roots` |
-| Copilot CLI | `copilot-cli` | yes (default on) | `roots` |
+| Copilot Chat | `copilot_chat` | yes (default on) | `roots` |
+| Copilot CLI | `copilot_cli` | yes (default on) | `roots` |
 | Cursor | `cursor` | yes (default on) | `roots` |
 | Gemini CLI | `gemini_cli` | yes (default on) | `roots` |
 | OpenCode / OpenClaw | `opencode` | yes (default on) | `roots` |
@@ -359,7 +266,6 @@ Each adapter can be configured in the `adapters` section of `config.json`. The k
 | Obsidian | `obsidian` | **no** (opt-in) | `vault_paths`, `exclude_folders`, `min_content_chars` |
 | Jira | `jira` | **no** (opt-in) | `server`, `email`, `api_token` / `api_token_env`, `jql`, `max_results` |
 | Meeting transcripts | `meeting` | **no** (opt-in) | `source_dirs`, `extensions` |
-| PDF | `pdf` | **no** (opt-in) | `source_dirs`, `min_pages`, `max_pages` |
 
 Non-AI-session adapters are opt-in only (#326) — set `{name}.enabled: true` in this config to have them fire on `sync`.
 
@@ -368,7 +274,7 @@ Example:
 ```json
 {
   "adapters": {
-    "copilot-chat": {
+    "copilot_chat": {
       "roots": ["/custom/path/to/vscode/workspaceStorage"]
     }
   }

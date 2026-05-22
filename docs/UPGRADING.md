@@ -15,6 +15,124 @@ The canonical per-release detail is
 [CHANGELOG.md](https://github.com/Pratiyush/llm-wiki/blob/master/CHANGELOG.md)
 — this guide focuses on "what might break".
 
+## v1.3.0 — consolidated 1.2.x patch roll-up
+
+**Released: 2026-04-26.**
+
+### Summary
+
+Drop-in upgrade from any 1.2.x. v1.3.0 consolidates 38 in-tree
+patch versions (1.2.1 → 1.2.38) under one minor release tag — no
+breaking API changes, no schema migrations, no config changes.
+
+```bash
+pip install -U llm-notebook   # → 1.3.0
+llmwiki --version             # → 1.3.0
+```
+
+### What's in it
+
+The full per-fix detail is preserved under the [1.2.x] entries in
+`CHANGELOG.md`. Two themes:
+
+1. **Opus 4.7 deep code-review backlog (#403, ~26 issues)** — every
+   correctness, perf, and observability finding got a one-issue-one-PR
+   fix. Headliners: `is_subagent` strict path check (#406),
+   `derive_session_slug` UUID-prefix collision (#424), tilde-fence
+   counting in `_close_open_fence` (#419), `wiki_query` ranking
+   length normalisation (#418), `wiki_search` cap (#413), per-vault
+   synth state (#420), `--force` sync persisting `_meta`/`_counters`
+   (#426), subprocess `claude_path` resolved via `shutil.which`
+   (#421).
+
+2. **Performance + features** — `DuplicateDetection` lint rule
+   rewritten with bucket+fingerprint+SequenceMatcher (1s vs minutes
+   on 500 pages, #412), perf-budget test suite (`-m slow`, #429),
+   `md_to_plain_text` cache (#417), auto-seeded project stubs
+   pre-populated from session metadata (#425), 2 new lint rules
+   (`frontmatter_count_consistency`, `tools_consistency`, #378),
+   `wiki-all` slash command, `_context.md` folder convention (#60).
+
+### Breaking — none
+
+Same CLI surface, same config schema, same on-disk state format.
+The only thing that changed is that the next plain `sync` after a
+forced re-sync will now correctly identify already-processed files
+as unchanged (was: re-processed every time, #426).
+
+### Schema migrations — none
+
+State files written by 1.2.x are read verbatim by 1.3.0.
+
+## v1.2.0 — first stable on the 1.x line
+
+**Released: 2026-04-25.**
+
+### Install changes
+
+- **PyPI distribution name is `llm-notebook`** — the `llmwiki` name was
+  taken on PyPI. The Python module + CLI command stay `llmwiki`, only
+  the `pip install` line changes:
+  ```bash
+  pip install llm-notebook        # was: pip install llmwiki
+  llmwiki --version               # → 1.2.0  (CLI name unchanged)
+  python3 -c "import llmwiki"     # still works (import name unchanged)
+  ```
+
+### Removed CLI subcommands
+
+The CLI was slimmed in #362. If you scripted any of these, replace as
+noted:
+
+- `llmwiki schedule` — removed. Schedule `llmwiki sync` directly via
+  your OS's job runner (launchd / systemd / Task Scheduler).
+- `llmwiki install-skills` — removed. Manually copy
+  `.claude/commands/wiki-*.md` into `~/.claude/commands/` for global
+  availability.
+- `llmwiki check-links` — removed. Use the GitHub Actions link-check
+  workflow instead.
+- `llmwiki watch`, `llmwiki manifest`, `llmwiki link-obsidian`,
+  `llmwiki export-obsidian`, `llmwiki export-marp`, `llmwiki export-qmd`,
+  `llmwiki eval` — also removed.
+- `llmwiki export marp` is the new path for Marp slide export.
+
+### Removed adapters
+
+`jira_adapter`, `meeting`, `pdf` were removed in #363. If you depended
+on any of them, pin v1.1.0-rc8 until you migrate.
+
+### Demo data correctness
+
+`user_messages` / `tool_calls` counts on the 8 demo session files were
+2–10× higher than the body actually contained. The values are now
+recomputed from body content. Two new lint rules (`#16
+frontmatter_count_consistency`, `#17 tools_consistency`) prevent
+regression.
+
+### `sync --force` no longer drops colliding sessions
+
+If you ran `sync --force` against a corpus where two sources had the
+same canonical filename (rare but real on large corpora), one of them
+was silently overwritten. Fix: per-run filename tracking now
+disambiguates regardless of `--force`. Affected ~200 of 495 sessions
+on a real corpus we tested.
+
+### New: `llmwiki all`
+
+One-shot pipeline runner for CI:
+
+```bash
+llmwiki all                  # build → graph → export → lint
+llmwiki all --strict         # exit 2 on any lint warning
+```
+
+### Schema migrations
+
+None. JSON sibling files now correctly emit `int` and `bool` types for
+`user_messages` / `tool_calls` / `is_subagent` (were strings); any
+downstream that string-compared `is_subagent == "false"` now needs
+`is_subagent is False`.
+
 ## v1.1.0-rc5
 
 **Released: 2026-04-21.**
@@ -34,8 +152,9 @@ The canonical per-release detail is
 
 - **`/wiki-synthesize` slash command** — wraps `llmwiki synthesize`
   with natural-language flags ("estimate cost", "dry run", "force").
-  Install via `llmwiki install-skills` or copy manually from
-  `.claude/commands/wiki-synthesize.md`.
+  Copy `.claude/commands/wiki-synthesize.md` into `~/.claude/commands/`
+  for global availability. (`llmwiki install-skills` was removed in
+  v1.2.0; manual copy is the supported path.)
 
 - **Dual-mode docs landing pages.** `docs/modes/api/` and
   `docs/modes/agent/` exist as skeletons; the actual API / Agent

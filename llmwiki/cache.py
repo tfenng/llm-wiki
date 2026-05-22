@@ -1,5 +1,17 @@
 """Prompt caching + batch-API scaffolding (v1.1.0 · #50).
 
+Thread-safety
+-------------
+**This module is NOT thread-safe.** ``load_batch_state`` /
+``save_batch_state`` read + write a JSON file with no locking;
+concurrent callers can race on the temp-file rename. The pure-functional
+helpers (``make_cached_block``, ``build_messages``, ``estimate_tokens``,
+``estimate_cost``) are reentrant. Batch-state helpers must be called from
+a single thread or under an external lock. Today's only call sites are
+single-process CLI invocations of ``llmwiki synthesize`` so this is fine;
+a future MCP path that queues batches concurrently must serialize via its
+own mutex (#py-l7 / #605).
+
 Every `/wiki-sync` and `/wiki-ingest` bundles the same stable prefix —
 CLAUDE.md schema, `wiki/index.md`, and `wiki/overview.md` — with every
 source file it asks the model to summarize. On a 500-page wiki that
@@ -83,6 +95,16 @@ MODEL_PRICING: dict[str, ModelRates] = {
         "output": 15.00,
     },
     "claude-haiku-4": {
+        "input": 0.80,
+        "cached_input": 0.08,
+        "cache_write": 1.00,
+        "output": 4.00,
+    },
+    # #py-m3 (#589): synthesize_overview actually invokes
+    # `claude-haiku-4-5-20251001` (the date-suffixed alias). Without
+    # this entry, cost-estimate code raises `ValueError: unknown model`.
+    # Same rate card as the bare claude-haiku-4 above.
+    "claude-haiku-4-5-20251001": {
         "input": 0.80,
         "cached_input": 0.08,
         "cache_write": 1.00,
@@ -309,9 +331,27 @@ class BatchState:
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "BatchState":
+        # #py-l4 (#602): wrap the BatchJob(**b) construction so a
+        # corrupt entry (extra/missing keys → TypeError) doesn't leak
+        # past the callers that expect this constructor to either
+        # succeed or return a deterministic fallback. Mirror the
+        # load_batch_state() shape: print a warning, drop the bad
+        # entries, return whatever survived.
+        import sys as _sys
+        def _safe(rows):
+            kept = []
+            for b in rows:
+                try:
+                    kept.append(BatchJob(**b))
+                except TypeError as e:
+                    print(
+                        f"warning: dropping malformed batch entry {b!r}: {e}",
+                        file=_sys.stderr,
+                    )
+            return kept
         return cls(
-            pending=[BatchJob(**b) for b in data.get("pending", [])],
-            completed=[BatchJob(**b) for b in data.get("completed", [])],
+            pending=_safe(data.get("pending", [])),
+            completed=_safe(data.get("completed", [])),
         )
 
 
@@ -328,7 +368,7 @@ def load_batch_state(repo_root: Path) -> BatchState:
         return BatchState()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         return BatchState()
     return BatchState.from_json(data)
 

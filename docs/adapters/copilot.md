@@ -1,7 +1,7 @@
 # GitHub Copilot adapters
 
 **Status:** Production (v0.6)
-**Modules:** `llmwiki.adapters.copilot_chat`, `llmwiki.adapters.copilot_cli`
+**Modules:** `llmwiki.adapters.contrib.copilot_chat`, `llmwiki.adapters.contrib.copilot_cli`
 **Tracking issue:** #93
 
 llmwiki ships two adapters for GitHub Copilot, covering the two distinct storage layouts.
@@ -10,9 +10,9 @@ llmwiki ships two adapters for GitHub Copilot, covering the two distinct storage
 
 ## Copilot Chat (VS Code extension)
 
-**Module:** `llmwiki.adapters.copilot_chat`
-**Source:** [`llmwiki/adapters/copilot_chat.py`](../../llmwiki/adapters/copilot_chat.py)
-**Registry name:** `copilot-chat`
+**Module:** `llmwiki.adapters.contrib.copilot_chat`
+**Source:** [`llmwiki/adapters/contrib/copilot_chat.py`](../../llmwiki/adapters/contrib/copilot_chat.py)
+**Registry name:** `copilot_chat` (canonical) — `copilot-chat` is kept as a back-compat alias for existing configs (#626).
 
 ### What it reads
 
@@ -55,7 +55,7 @@ Override roots in `config.json`:
 ```json
 {
   "adapters": {
-    "copilot-chat": {
+    "copilot_chat": {
       "roots": ["~/custom/copilot/path"]
     }
   }
@@ -66,9 +66,9 @@ Override roots in `config.json`:
 
 ## Copilot CLI
 
-**Module:** `llmwiki.adapters.copilot_cli`
-**Source:** [`llmwiki/adapters/copilot_cli.py`](../../llmwiki/adapters/copilot_cli.py)
-**Registry name:** `copilot-cli`
+**Module:** `llmwiki.adapters.contrib.copilot_cli`
+**Source:** [`llmwiki/adapters/contrib/copilot_cli.py`](../../llmwiki/adapters/contrib/copilot_cli.py)
+**Registry name:** `copilot_cli` (canonical) — `copilot-cli` is kept as a back-compat alias for existing configs (#626).
 
 ### What it reads
 
@@ -102,7 +102,7 @@ Override roots in `config.json`:
 ```json
 {
   "adapters": {
-    "copilot-cli": {
+    "copilot_cli": {
       "roots": ["~/.copilot/session-state"]
     }
   }
@@ -120,13 +120,13 @@ export COPILOT_HOME=~/.copilot-custom
 ## Testing both adapters
 
 ```bash
-python3 -m llmwiki adapters      # should list copilot-chat and copilot-cli
+python3 -m llmwiki adapters      # should list copilot_chat and copilot_cli
 python3 -m pytest tests/test_copilot_adapters.py -v
 ```
 
 ## Reference
 
-- [`llmwiki/adapters/copilot_chat.py`](../../llmwiki/adapters/copilot_chat.py) -- Chat adapter source
-- [`llmwiki/adapters/copilot_cli.py`](../../llmwiki/adapters/copilot_cli.py) -- CLI adapter source
+- [`llmwiki/adapters/contrib/copilot_chat.py`](../../llmwiki/adapters/contrib/copilot_chat.py) -- Chat adapter source
+- [`llmwiki/adapters/contrib/copilot_cli.py`](../../llmwiki/adapters/contrib/copilot_cli.py) -- CLI adapter source
 - [`llmwiki/convert.py`](../../llmwiki/convert.py) -- the shared converter
 - [README](../../README.md) -- project overview

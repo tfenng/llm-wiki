@@ -64,9 +64,14 @@ class TestCopilotChatContract:
         assert len(desc) > 0
 
     def test_registered_as_copilot_chat(self):
+        # #v1378-review: REGISTRY is canonical-only; aliases live in
+        # REGISTRY_ALIASES and resolve via resolve_adapter_name.
+        from llmwiki.adapters import REGISTRY_ALIASES, resolve_adapter_name
         discover_all()
-        assert "copilot-chat" in REGISTRY
-        assert REGISTRY["copilot-chat"] is CopilotChatAdapter
+        assert "copilot_chat" in REGISTRY
+        assert REGISTRY["copilot_chat"] is CopilotChatAdapter
+        assert REGISTRY_ALIASES.get("copilot-chat") == "copilot_chat"
+        assert resolve_adapter_name("copilot-chat") == "copilot_chat"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -268,9 +273,12 @@ class TestCopilotCliContract:
         assert len(desc) > 0
 
     def test_registered_as_copilot_cli(self):
+        from llmwiki.adapters import REGISTRY_ALIASES, resolve_adapter_name
         discover_all()
-        assert "copilot-cli" in REGISTRY
-        assert REGISTRY["copilot-cli"] is CopilotCliAdapter
+        assert "copilot_cli" in REGISTRY
+        assert REGISTRY["copilot_cli"] is CopilotCliAdapter
+        assert REGISTRY_ALIASES.get("copilot-cli") == "copilot_cli"
+        assert resolve_adapter_name("copilot-cli") == "copilot_cli"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -412,11 +420,54 @@ class TestCopilotCrossAdapter:
             assert isinstance(sessions, list)
 
     def test_both_in_registry(self):
+        # #626: canonical names are snake_case; kebab-case still resolves
+        # via the alias mechanism so existing user configs don't break.
+        # #v1378-review: aliases moved out of REGISTRY into
+        # REGISTRY_ALIASES so a canonical iteration of REGISTRY hits
+        # each adapter once. Lookup-by-alias goes through resolve_adapter_name.
+        from llmwiki.adapters import REGISTRY_ALIASES, resolve_adapter_name
         discover_all()
-        assert "copilot-chat" in REGISTRY
-        assert "copilot-cli" in REGISTRY
+        assert "copilot_chat" in REGISTRY
+        assert "copilot_cli" in REGISTRY
+        # Legacy kebab-case is no longer a REGISTRY key but resolves correctly.
+        assert "copilot-chat" not in REGISTRY
+        assert "copilot-cli" not in REGISTRY
+        assert REGISTRY_ALIASES["copilot-chat"] == "copilot_chat"
+        assert REGISTRY_ALIASES["copilot-cli"] == "copilot_cli"
+        assert REGISTRY[resolve_adapter_name("copilot-chat")] is REGISTRY["copilot_chat"]
+        assert REGISTRY[resolve_adapter_name("copilot-cli")] is REGISTRY["copilot_cli"]
 
     def test_names_set_by_register(self):
+        # #626: cls.name reflects the canonical (snake_case) name only;
+        # aliases never overwrite cls.name.
         discover_all()
-        assert CopilotChatAdapter.name == "copilot-chat"
-        assert CopilotCliAdapter.name == "copilot-cli"
+        assert CopilotChatAdapter.name == "copilot_chat"
+        assert CopilotCliAdapter.name == "copilot_cli"
+
+    def test_kebab_case_config_still_recognised(self, tmp_path):
+        # #626: existing user `sessions_config.json` files keyed under
+        # `copilot-chat` / `copilot-cli` must keep working — the
+        # adapter __init__ falls back to the legacy key when the
+        # snake_case key is absent.
+        discover_all()
+        legacy_chat = {"adapters": {"copilot-chat": {"roots": [str(tmp_path)]}}}
+        adapter = CopilotChatAdapter(config=legacy_chat)
+        assert adapter.roots == [tmp_path]
+        legacy_cli = {"adapters": {"copilot-cli": {"roots": [str(tmp_path)]}}}
+        adapter = CopilotCliAdapter(config=legacy_cli)
+        assert adapter.roots == [tmp_path]
+
+    def test_snake_case_config_takes_precedence(self, tmp_path):
+        # When BOTH keys are present, the canonical snake_case wins so
+        # users migrating their config can clean up the old key safely.
+        discover_all()
+        snake_path = tmp_path / "snake"
+        kebab_path = tmp_path / "kebab"
+        snake_path.mkdir()
+        kebab_path.mkdir()
+        cfg = {"adapters": {
+            "copilot_chat": {"roots": [str(snake_path)]},
+            "copilot-chat": {"roots": [str(kebab_path)]},
+        }}
+        adapter = CopilotChatAdapter(config=cfg)
+        assert adapter.roots == [snake_path]

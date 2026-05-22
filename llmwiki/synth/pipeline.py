@@ -25,7 +25,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from llmwiki import REPO_ROOT
-from llmwiki.build import parse_frontmatter
+# #py-m1 (#587) / #arch-h5 (#610): import directly from _frontmatter
+# instead of via build.py. The build module pulls in 145+ transitive
+# imports; the parser sits cleanly in _frontmatter.py with no deps.
+from llmwiki._frontmatter import parse_frontmatter
 from llmwiki.synth.base import BaseSynthesizer, DummySynthesizer
 
 
@@ -114,18 +117,51 @@ def _load_prompt_template() -> str:
     return PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
-def _load_state() -> dict[str, float]:
-    """Load the mtime state file. Returns {relative_path: mtime}."""
-    if not STATE_FILE.is_file():
+def _resolve_state_file(state_file: Optional[Path] = None) -> Path:
+    """Return the synth state-file path.
+
+    #420: when running in vault-overlay mode, the state file must live
+    *under the vault root*, not the repo root — otherwise two different
+    vaults synthesised against the same repo silently share idempotency
+    state and one vault's run marks the other vault's files unchanged.
+    Callers pass ``state_file`` explicitly when in vault mode; default
+    falls back to the repo-root location for the no-vault case.
+    """
+    return state_file if state_file is not None else STATE_FILE
+
+
+def _load_state(state_file: Optional[Path] = None) -> dict[str, float]:
+    """Load the mtime state file. Returns {relative_path: mtime}.
+
+    #sec-16 (#560): validate the schema before trusting it. A
+    corrupted or hand-edited state file used to be returned verbatim,
+    which then crashed every downstream consumer that expected
+    `{str: float}`. Now: must be a dict, every value must be int/float,
+    every key must be str. Anything else → reset to empty so synthesis
+    re-runs from scratch (worst case: extra work, never wrong work).
+    """
+    target = _resolve_state_file(state_file)
+    if not target.is_file():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except (ValueError, json.JSONDecodeError):
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except ValueError:
         return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str):
+            continue
+        if isinstance(v, (int, float)):
+            out[k] = float(v)
+        # Other shapes silently dropped — caller treats as "needs synth"
+    return out
 
 
-def _save_state(state: dict[str, float]) -> None:
-    STATE_FILE.write_text(
+def _save_state(state: dict[str, float], state_file: Optional[Path] = None) -> None:
+    target = _resolve_state_file(state_file)
+    target.write_text(
         json.dumps(state, indent=2, sort_keys=True), encoding="utf-8"
     )
 
@@ -512,6 +548,13 @@ def _build_source_page(
     ai_tags, clean_body = _extract_suggested_tags(synthesized_body)
 
     # Preserve any maintainer-curated tags on re-synthesize.
+    # #py-h5 (#584): the broad `except Exception` was eating real
+    # parse failures + unicode errors silently, dropping the curated
+    # tags on every regression. Narrow to the failures that are
+    # actually expected here (file read OSError, frontmatter format
+    # issues): everything else (MemoryError, KeyboardInterrupt,
+    # surprise type errors) bubbles up so the regression is visible
+    # instead of silently producing a tag-loss diff.
     existing_tags: list[str] = []
     if existing_page_path is not None and existing_page_path.exists():
         try:
@@ -519,8 +562,14 @@ def _build_source_page(
                 existing_page_path.read_text(encoding="utf-8")
             )
             existing_tags = list(existing_meta.get("tags", []) or [])
-        except Exception:
-            # Never fail synthesis on a frontmatter read error.
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            # Log loud — silent drop is what #584 was about.
+            import sys as _sys
+            print(
+                f"warning: could not preserve tags from "
+                f"{existing_page_path}: {e}",
+                file=_sys.stderr,
+            )
             existing_tags = []
 
     baseline = _derive_baseline_tags(meta)
@@ -549,6 +598,7 @@ def synthesize_new_sessions(
     dry_run: bool = False,
     force: bool = False,
     log_path: Optional[Path] = None,
+    state_file: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Main entry point. Returns a summary dict:
 
@@ -576,7 +626,7 @@ def synthesize_new_sessions(
 
     sources_out = wiki_sources_dir or WIKI_SOURCES
     prompt_template = _load_prompt_template()
-    state = {} if force else _load_state()
+    state = {} if force else _load_state(state_file)
     sessions = _discover_raw_sessions(raw_dir)
 
     new_files: list[tuple[Path, dict[str, Any], str]] = []
@@ -627,13 +677,19 @@ def synthesize_new_sessions(
         filename = f"{date}-{slug}" if date else slug
 
         try:
-            # Call the synthesizer backend
-            prompt = prompt_template.replace("{body}", body[:8000])
-            prompt = prompt.replace(
-                "{meta}",
-                "\n".join(f"{k}: {v}" for k, v in meta.items()),
-            )
-            synthesized = backend.synthesize_source_page(body, meta, prompt)
+            # #py-h7 (#585): pass the raw template — backends own rendering.
+            # The pre-render here used to interpolate {body} and {meta}
+            # before handing the result to backends, but that fought with
+            # the BaseSynthesizer contract ("prompt_template is the
+            # contents of prompts/source_page.md with {body} and {meta}
+            # placeholders"). Worse, the pipeline pre-render formatted
+            # meta as `key: value\n` lines while OllamaSynthesizer's own
+            # _render_prompt formats meta as JSON — so Ollama users
+            # silently got the pipeline's textual format instead of the
+            # JSON its prompts were tuned for. Now: pipeline hands over
+            # the unrendered template; each backend renders it with the
+            # format it was designed against.
+            synthesized = backend.synthesize_source_page(body, meta, prompt_template)
 
             # Build the full wiki source page.
             # #351: pass the existing path so maintainer-curated tags
@@ -679,14 +735,19 @@ def synthesize_new_sessions(
             },
         )
 
-    _save_state(state)
+    _save_state(state, state_file)
 
     # G-09 (#295): rebuild wiki/index.md so lint's index_sync rule
     # passes on fresh synthesized corpora. Synthesize is authoritative
     # for `## Sources` — the index reflects whatever's on disk now.
-    try:
-        _rebuild_index(sources_out.parent)
-    except Exception as e:
-        summary["errors"].append(f"index rebuild: {e}")
+    # #arch-m7 (#619): gate behind a "did anything actually change?"
+    # check. The index rebuild walks the entire wiki + parses every
+    # frontmatter; on a 5k-page corpus that's seconds. Skip when zero
+    # pages were synthesized in this pass.
+    if summary.get("synthesized", 0) > 0:
+        try:
+            _rebuild_index(sources_out.parent)
+        except (OSError, ValueError, RuntimeError) as e:
+            summary["errors"].append(f"index rebuild: {e}")
 
     return summary

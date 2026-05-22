@@ -57,13 +57,14 @@ Example output:
 Registered adapters:
   claude_code       available: yes  (Claude Code — reads ~/.claude/projects/*/*.jsonl)
   codex_cli         available: yes  (Codex CLI — reads ~/.codex/sessions/**/*.jsonl)
-  copilot-chat      available: no   (GitHub Copilot Chat — reads VS Code workspaceStorage chatSessions)
-  copilot-cli       available: no   (GitHub Copilot CLI — reads ~/.copilot/session-state/*/events.jsonl)
+  copilot_chat      available: no   (GitHub Copilot Chat — reads VS Code workspaceStorage chatSessions)
+  copilot_cli       available: no   (GitHub Copilot CLI — reads ~/.copilot/session-state/*/events.jsonl)
   cursor            available: yes  (Cursor IDE — reads chat history)
   gemini_cli        available: no   (Gemini CLI — reads ~/.gemini/ session history)
   obsidian          available: no   (Obsidian vault)
-  pdf               available: yes  (PDF files)
 ```
+
+> The PDF adapter was removed in the simplification sweep — `llmwiki adapters` no longer lists it.
 
 Any adapter marked `available: yes` will be included when you run `llmwiki sync`. See [multi-agent-setup.md](multi-agent-setup.md) for details on configuring individual agents.
 

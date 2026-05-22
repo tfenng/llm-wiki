@@ -24,7 +24,7 @@ python3 -m llmwiki              # same as --help
 ```
 
 The shorter alias `llmwiki` works too once the package is installed
-(`pip install llmwiki` or via Homebrew — see
+(`pip install llm-notebook` or via Homebrew — see
 [`deploy/pypi-publishing.md`](../deploy/pypi-publishing.md) /
 [`deploy/homebrew-setup.md`](../deploy/homebrew-setup.md)).
 
@@ -188,7 +188,6 @@ Registered adapters:
   meeting           no        -             Meeting transcripts (VTT/SRT)
   obsidian          no        -             Obsidian — reads a vault
   opencode          no        -             OpenCode / OpenClaw sessions
-  pdf               no        -             PDF source files
   web_clipper       no        -             Obsidian Web Clipper intake
 ```
 
@@ -221,7 +220,7 @@ auto-copied into `site/graph.html` on every `build`.
 tree-sitter AST extraction for code, semantic analysis for docs, Leiden community
 detection, god-node analysis. Outputs to `graphify-out/` (graph.json, graph.html,
 GRAPH_REPORT.md) and copies to `graph/` for build compatibility. Install:
-`pip install llmwiki[graph]` or `pip install graphifyy`.
+`pip install llm-notebook[graph]` or `pip install graphifyy`.
 
 ---
 
@@ -406,8 +405,39 @@ python3 -m llmwiki query "Flutter mobile" --depth 2 --budget 1000
 | `--depth N` | BFS traversal depth. Default: `3`. |
 | `--budget N` | Max output tokens. Default: `2000`. |
 
-Requires Graphify (`pip install llmwiki[graph]`). Run `llmwiki graph` first
+Requires Graphify (`pip install llm-notebook[graph]`). Run `llmwiki graph` first
 to build the graph.
+
+---
+
+## `all` — run the full pipeline
+
+Convenience entry point that runs `build` → `graph` → `export all` → `lint`
+in order. This is the one command to run after `sync` to produce a
+CI-ready site.
+
+```bash
+python3 -m llmwiki all
+python3 -m llmwiki all --graph-engine builtin   # skip optional graphify
+python3 -m llmwiki all --skip-graph --strict    # fail CI on any lint issue
+```
+
+### Flags
+
+| Flag | What |
+|---|---|
+| `--out DIR` | Output dir for build + export. Default: `site/`. |
+| `--search-mode {auto,tree,flat}` | Forwarded to `build`. Default: `auto`. |
+| `--graph-engine {builtin,graphify}` | Forwarded to `graph`. Default: `graphify`. |
+| `--skip-graph` | Skip the graph step entirely (useful when graphify is not installed). |
+| `--fail-fast` | Stop at the first non-zero step. Default: continue, report the worst exit code. |
+| `--strict` | Exit `2` if `lint` reports any errors/warnings. |
+
+Exit codes:
+
+- `0` — every step succeeded.
+- non-zero — forwarded from the first (or worst) failing step.
+- `2` — `--strict` and lint reported issues.
 
 ---
 

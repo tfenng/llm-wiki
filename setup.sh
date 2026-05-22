@@ -47,10 +47,11 @@ echo "==> installing llmwiki (-e .)"
 # 5. Show available adapters
 "$PYTHON_BIN" -m llmwiki adapters
 
-# 6. Show current sync status so users can see what's ready.
+# 6. First sync (status probe so users see how many sessions exist
+#    without actually converting them yet)
 echo
-echo "==> current sync status:"
-"$PYTHON_BIN" -m llmwiki sync --status --recent 5 || true
+echo "==> sync status:"
+python3 -m llmwiki sync --status || true
 
 echo
 echo "================================================================"
@@ -65,4 +66,4 @@ echo
 echo "Optional SessionStart hook — auto-sync on every Claude Code launch:"
 echo "  Add this to ~/.claude/settings.json under 'hooks':"
 echo '    "SessionStart": [ { "hooks": [ { "type": "command",'
-echo "      \"command\": \"($SCRIPT_DIR/sync.sh > /tmp/llmwiki-sync.log 2>&1 &) ; exit 0\" } ] } ]"
+echo "      \"command\": \"(python3 \\\"$SCRIPT_DIR/llmwiki/convert.py\\\" > /tmp/llmwiki-sync.log 2>&1 &) ; exit 0\" } ] } ]"

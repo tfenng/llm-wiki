@@ -9,6 +9,7 @@ mtime, so re-running on unchanged files is a fast no-op.
 
 from __future__ import annotations
 
+import fnmatch as _fnmatch  # #py-m11 (#597): module-level alias
 import json
 import re
 import sys
@@ -55,7 +56,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # ─── config + state ────────────────────────────────────────────────────────
 
 def load_config(path: Path) -> dict[str, Any]:
-    cfg: dict[str, Any] = json.loads(json.dumps(DEFAULT_CONFIG))
+    # #arch-l6 (#628): the json.loads(json.dumps(...)) idiom was a
+    # round-trip deep-copy from the era before copy.deepcopy was a
+    # builtin import. copy.deepcopy is ~5× faster and avoids the
+    # implicit "JSON-serializable types only" constraint.
+    import copy
+    cfg: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
     if path.exists():
         try:
             user = json.loads(path.read_text(encoding="utf-8"))
@@ -67,11 +73,46 @@ def load_config(path: Path) -> dict[str, Any]:
                 cfg[section].update(value)
             else:
                 cfg[section] = value
-    # Auto-detect username if not set
+    # Auto-detect username if not set. #489: be careful here.
+    #
+    # The previous logic was `os.environ["USER"] or Path.home().name`.
+    # Two failure modes that bit users in the wild:
+    #
+    # 1. **Windows.** Windows uses ``USERNAME``, not ``USER``. The env
+    #    var lookup returns empty, the fallback returns
+    #    ``Path.home().name`` — which is the user's actual name, fine
+    #    on a real desktop but the redactor then matches the *short*
+    #    string in path components anywhere in transcripts. On a
+    #    Windows machine where the user's name is short (e.g. "AB")
+    #    this flagged unrelated path tokens.
+    # 2. **Stripped Docker images / CI.** ``USER`` is unset and
+    #    ``Path.home()`` returns ``/`` or ``/root``; ``Path("/").name``
+    #    is empty, but ``Path("/root").name`` is ``"root"`` — every
+    #    ``/Users/root/`` and ``/home/root/`` path got rewritten as
+    #    ``/Users/USER/`` even when the actual transcript author had
+    #    a totally different username.
+    #
+    # Fix: prefer ``USER`` (Unix) → ``USERNAME`` (Windows) →
+    # ``Path.home().name`` *only if it's at least 3 chars long*.
+    # Anything shorter is too risky as a substring rewrite target;
+    # leave the field empty and let the user opt in via config.
     if not cfg["redaction"].get("real_username"):
         try:
             import os
-            cfg["redaction"]["real_username"] = os.environ.get("USER", "") or Path.home().name
+            candidate = (
+                os.environ.get("USER")
+                or os.environ.get("USERNAME")
+                or ""
+            ).strip()
+            if not candidate:
+                home_name = Path.home().name.strip()
+                # Only trust the home-dir name when it's not a generic
+                # container default and is long enough to be specific.
+                if len(home_name) >= 3 and home_name.lower() not in (
+                    "root", "user", "users", "home", "ubuntu",
+                ):
+                    candidate = home_name
+            cfg["redaction"]["real_username"] = candidate
         except Exception:
             pass
     return cfg
@@ -153,9 +194,10 @@ def _migrate_legacy_state(
         ("obsidian",     "Obsidian"),
         ("opencode",     "opencode/"),
         ("chatgpt",      "conversations.json"),
-        ("jira",         "/jira/"),
-        ("meeting",      "transcripts"),
-        ("pdf",          ".pdf"),
+        # #493: jira / meeting / pdf hints removed — no concrete
+        # adapters ship for them. If they're added back later, the
+        # adapter author can add their own LEGACY_PATH_HINT. See
+        # docs/UPGRADING.md for the original removal note.
     ]
     known_names = set(adapter_names)
     for k, v in raw.items():
@@ -195,7 +237,7 @@ def _migrate_legacy_state(
 
 def load_state(
     path: Path, adapter_names: Optional[Iterable[str]] = None
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Load ``.llmwiki-state.json`` and migrate legacy absolute-path keys.
 
     Older state files used absolute paths as keys (``/Users/…/foo.jsonl``).
@@ -223,7 +265,12 @@ def load_state(
     return migrated
 
 
-def save_state(path: Path, state: dict[str, float]) -> None:
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    # #426 (post-final-review): values are heterogeneous. Per-file
+    # entries are floats (mtime), but the function also persists
+    # `_meta` (dict) and `_counters` (dict) sentinel keys. The old
+    # `dict[str, float]` annotation lied to type-checkers and to the
+    # multi-agent review that flagged it.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -269,7 +316,16 @@ class IgnoreMatcher:
             return cls([])
         try:
             text = path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as e:
+            # #py-l2 (#600): silent fallback to empty was hiding real
+            # permission / IO problems from operators. Print a warning
+            # to stderr so the failure is visible without breaking
+            # callers that expect a usable IgnoreMatcher.
+            import sys as _sys
+            print(
+                f"warning: could not read {path}: {e}; treating as no-ignores",
+                file=_sys.stderr,
+            )
             return cls([])
         return cls(text.splitlines())
 
@@ -280,8 +336,14 @@ class IgnoreMatcher:
         We emulate gitignore-ish behaviour with stdlib fnmatch, extended to
         handle `**` by translating it to `*` and also matching the pattern
         against any path suffix.
+
+        #py-m11 (#597): fnmatch was imported per-call. The module is in
+        the stdlib (no actual disk hit), but the resolution still costs
+        a few microseconds × thousands of calls during a sync. Hoisted
+        to a module-level alias.
         """
-        import fnmatch
+        # Use the module-level _fnmatch alias hoisted below.
+        fnmatch = _fnmatch
 
         # Normalize path separators
         target = target.replace("\\", "/")
@@ -333,27 +395,66 @@ class IgnoreMatcher:
 # ─── parsing ───────────────────────────────────────────────────────────────
 
 def parse_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Parse a JSONL transcript into a list of dict records.
+
+    #487: any OSError opening or reading the file is **re-raised** so
+    the caller in ``convert_all`` can route the failure through the
+    same ``_quarantine_add`` + 'errored' bucket as every other I/O
+    failure. The previous ``except OSError: pass`` swallowed
+    permission errors silently, leaving the affected file invisible
+    to ``llmwiki sync --status`` and the quarantine — operators saw
+    a session counted as 'filtered' (zero records) rather than
+    'errored' (something went wrong, look at it).
+
+    Per-line ``json.JSONDecodeError`` is still caught and skipped:
+    JSONL allows partial writes from a still-running session, and a
+    single bad line shouldn't abandon the whole file. Only
+    file-level I/O failures bubble up.
+    """
+    # #sec-8 (#552): size guards. A maliciously-large or runaway
+    # transcript could blow up memory or stall the parser. Per-line cap
+    # rejects pathologically long lines (a 200MB single-line JSON);
+    # per-file cap caps total bytes consumed even if every line is fine.
+    # Numbers chosen well above the largest legitimate Claude session
+    # observed in the wild (≈4 MB / 800 KB per line).
+    PER_LINE_BYTE_CAP = 16 * 1024 * 1024     # 16 MB / line
+    PER_FILE_BYTE_CAP = 256 * 1024 * 1024    # 256 MB / file
     out: list[dict[str, Any]] = []
-    try:
-        # ``errors="replace"`` lets us survive the occasional corrupt byte in a
-        # session transcript (e.g. a truncated UTF-8 sequence from a killed
-        # tool). Before the fix a single bad byte would abort the whole sync.
-        with path.open(encoding="utf-8", errors="replace") as f:
-            for line_no, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                # Only keep dict-shaped records. JSONL files occasionally
-                # contain stray scalars (e.g. numbers, strings) from partial
-                # writes, which used to crash downstream filter_records.
-                if isinstance(rec, dict):
-                    out.append(rec)
-    except OSError:
-        pass
+    consumed = 0
+    # ``errors="replace"`` lets us survive the occasional corrupt byte in a
+    # session transcript (e.g. a truncated UTF-8 sequence from a killed
+    # tool). Before the fix a single bad byte would abort the whole sync.
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line_no, line in enumerate(f, 1):
+            line_bytes = len(line.encode("utf-8", errors="replace"))
+            consumed += line_bytes
+            if line_bytes > PER_LINE_BYTE_CAP:
+                # Skip — but keep walking. A single 30 MB line is
+                # almost certainly noise; one bad line shouldn't
+                # abandon the rest of the file.
+                continue
+            if consumed > PER_FILE_BYTE_CAP:
+                # Stop here — return what we've accumulated so far so
+                # callers still get partial data instead of nothing.
+                import sys as _sys
+                print(
+                    f"warning: {path} exceeded {PER_FILE_BYTE_CAP // (1024*1024)}MB cap; "
+                    f"truncating after {line_no} lines",
+                    file=_sys.stderr,
+                )
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            # Only keep dict-shaped records. JSONL files occasionally
+            # contain stray scalars (e.g. numbers, strings) from partial
+            # writes, which used to crash downstream filter_records.
+            if isinstance(rec, dict):
+                out.append(rec)
     return out
 
 
@@ -410,38 +511,214 @@ def most_common_model(records: list[dict[str, Any]]) -> str:
 
 # ─── redaction + truncation ────────────────────────────────────────────────
 
+# #416 + #484: default token shapes redacted out of every session
+# transcript regardless of user config. CLAUDE.md security model
+# promises redaction "before anything hits disk" — these patterns
+# close the gap left by relying on user-provided `extra_patterns`.
+#
+# Original (#416):
+# - GitHub PATs: `ghp_*` (classic), `gho_*` (OAuth), `ghs_*`
+#   (server-to-server), `ghu_*` (user-to-server), `github_pat_*`
+#   (fine-grained)
+# - AWS access key IDs: `AKIA*` (20 chars total)
+# - Slack tokens: `xoxb-*`, `xoxp-*`, `xoxa-*`, `xoxr-*`, `xoxs-*`
+#
+# Extended (#484) — added the patterns Pratiyush's developers most
+# commonly paste into Claude sessions ("here's my .env, why isn't
+# auth working?"). Anything below this comment is one PEM-encoded
+# / one prefix-shaped paste away from being committed to raw/ and
+# served at the public GitHub Pages URL by the pages.yml workflow:
+#
+# - Anthropic API keys: `sk-ant-api03-*` (and any future variant)
+# - OpenAI keys: classic `sk-*`, project keys `sk-proj-*`,
+#   service-account keys `sk-svcacct-*`
+# - Google API keys: `AIza[A-Za-z0-9_-]{35}`
+# - Stripe live keys: `sk_live_*`, `pk_live_*` (publishable too —
+#   leak associates the project with you even if revoked)
+# - npm tokens: `npm_[A-Za-z0-9]{36}`
+# - JWT structure: `eyJ...eyJ...sig` (loose 3-segment shape)
+# - PEM private keys: full BEGIN/END envelope
+#
+# These run AFTER user `extra_patterns` so users can override.
+_DEFAULT_TOKEN_PATTERNS = [
+    # GitHub
+    re.compile(r"\bghp_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgho_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bghs_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bghu_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    # AWS
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # Slack
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    # #484: Anthropic API keys
+    re.compile(r"\bsk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,}\b"),
+    # #484: OpenAI keys (project + service-account variants must come
+    # BEFORE the generic `sk-` rule below so they match more specifically).
+    re.compile(r"\bsk-proj-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsk-svcacct-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    # #484: Google API keys (39 chars total: AIza + 35)
+    re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b"),
+    # #484: Stripe live + restricted keys (test keys `sk_test_*` are
+    # intentionally not redacted — they're meant to ship in code).
+    re.compile(r"\bsk_live_[0-9a-zA-Z]{24,}\b"),
+    re.compile(r"\bpk_live_[0-9a-zA-Z]{24,}\b"),
+    re.compile(r"\brk_live_[0-9a-zA-Z]{24,}\b"),
+    # #484: npm registry tokens
+    re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
+    # #484: JWT shape — 3 base64url segments separated by `.`. Loose
+    # enough to catch most JWTs without false-positiving on every dotted
+    # token. Header MUST start `eyJ` (`{"`) which is the canonical JWT
+    # opening; payload likewise.
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    # #484: PEM-encoded private keys. Multi-line via `re.DOTALL`.
+    re.compile(
+        r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY-----"
+        r".*?"
+        r"-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY-----",
+        re.DOTALL,
+    ),
+]
+
+
 class Redactor:
     def __init__(self, config: dict[str, Any]):
         red = config.get("redaction", {})
         self.real_user = red.get("real_username", "")
         self.repl_user = red.get("replacement_username", "USER")
-        self.patterns = [re.compile(p) for p in red.get("extra_patterns", [])]
+        # #py-l6 (#604): one bad user-supplied pattern used to abort
+        # construction of the entire Redactor — leaving sync running
+        # with NO redaction at all (worse than partial redaction).
+        # Compile each pattern individually; warn on the bad ones, keep
+        # the good ones. Default token patterns + username redaction
+        # still run regardless.
+        self.patterns = []
+        import sys as _sys
+        for p in red.get("extra_patterns", []):
+            try:
+                self.patterns.append(re.compile(p))
+            except re.error as e:
+                print(
+                    f"warning: invalid redaction pattern {p!r} skipped: {e}",
+                    file=_sys.stderr,
+                )
 
     def __call__(self, text: str) -> str:
         if not text:
             return text
         if self.real_user:
-            text = text.replace(f"/Users/{self.real_user}/", f"/Users/{self.repl_user}/")
-            text = text.replace(f"/Users/{self.real_user}", f"/Users/{self.repl_user}")
-            text = text.replace(f"/home/{self.real_user}/", f"/home/{self.repl_user}/")
+            text = self._redact_username(text)
         for pat in self.patterns:
+            text = pat.sub("<REDACTED>", text)
+        # #416: default token redaction runs unconditionally so users
+        # never accidentally publish credentials by forgetting to
+        # configure `extra_patterns`.
+        for pat in _DEFAULT_TOKEN_PATTERNS:
             text = pat.sub("<REDACTED>", text)
         return text
 
+    def _redact_username(self, text: str) -> str:
+        """Replace the real username in home-directory paths.
+
+        #416: covers macOS (`/Users/<u>`), Linux (`/home/<u>`), Windows
+        (`C:\\Users\\<u>` plus mixed-separator variants users hit when
+        copy-pasting between shells), and WSL (`/mnt/c/Users/<u>`).
+
+        #485: extended to cover Windows non-C drives (`D:\\Users\\`,
+        `E:\\Users\\`, every drive letter), Cygwin
+        (`/cygdrive/<letter>/Users/<u>`), Windows extended-length
+        prefix (`\\\\?\\C:\\Users\\<u>`), and WSL UNC
+        (`\\\\wsl.localhost\\<distro>\\home\\<u>`,
+        `\\\\wsl$\\<distro>\\home\\<u>`). All variants users hit in
+        the wild on a multi-drive Windows box or a Cygwin/WSL
+        environment.
+
+        Username can contain hyphens, underscores, and unicode.
+        """
+        # #py-h8 (#586): cache the compiled username pattern on the
+        # instance so a long sync doesn't recompile the same regex
+        # thousands of times. Key on the real_user string so a config
+        # change between calls (rare) still rebuilds the pattern.
+        cached = getattr(self, "_username_pattern_cache", None)
+        if cached and cached[0] == self.real_user:
+            return cached[1].sub(
+                lambda m: m.group("prefix") + self.repl_user, text
+            )
+        u = re.escape(self.real_user)
+        repl_user = self.repl_user
+        # Single regex with prefix alternation; word-style boundary
+        # (lookahead) prevents matching `aliceandbob` when `alice` is
+        # the real user. The username group is itself the only thing
+        # we substitute — separators and prefix are preserved.
+        prefixes = (
+            # Original (#416): macOS / Linux / Windows C: / WSL /mnt
+            r"/Users/",
+            r"/home/",
+            r"C:\\Users\\",
+            r"C:/Users/",
+            r"/mnt/[a-z]/Users/",
+            # #485: Windows non-C drives (D, E, F, ...) — both backslash
+            # and forward-slash forms (Powershell prints either depending
+            # on origin).
+            r"[A-Za-z]:\\Users\\",
+            r"[A-Za-z]:/Users/",
+            # #485: Cygwin home format
+            r"/cygdrive/[a-z]/Users/",
+            # #485: Windows extended-length path prefix `\\?\C:\Users\`
+            # (used by APIs that bypass MAX_PATH; appears in some tool
+            # output).
+            r"\\\\\?\\[A-Za-z]:\\Users\\",
+            # #485: WSL UNC prefixes — both modern (`wsl.localhost`) and
+            # legacy (`wsl$`). Distro name allows letters/digits/hyphens.
+            r"\\\\wsl\.localhost\\[A-Za-z0-9_-]+\\home\\",
+            r"\\\\wsl\$\\[A-Za-z0-9_-]+\\home\\",
+        )
+        pattern = re.compile(
+            r"(?P<prefix>" + "|".join(prefixes) + r")"
+            + r"(?P<user>" + u + r")"
+            + r"(?=$|[/\\])"
+        )
+        # Cache for next call.
+        self._username_pattern_cache = (self.real_user, pattern)
+        return pattern.sub(lambda m: m.group("prefix") + repl_user, text)
+
 
 def _close_open_fence(text: str) -> str:
-    """If ``text`` contains an odd number of ``\\`\\`\\``` fence markers,
-    append a closing fence so downstream markdown parsers don't swallow the
-    rest of the page as one giant code block. Counts only lines whose first
-    non-whitespace characters are triple backticks (real fences, not inline
-    code). See #72 — truncated tool results used to eat everything below them.
+    """If ``text`` contains an unclosed code fence, append the matching
+    close so downstream markdown parsers don't swallow the rest of the
+    page as one giant code block.
+
+    #72 — truncated tool results used to eat everything below them.
+    #419 — track ``\\`\\`\\``` and ``~~~`` independently. Markdown allows
+    both fence styles; some pretty-printers and Quarto-flavoured docs
+    use ``~~~``. Counting them together lets one style mask the other's
+    open count and the wrong fence type ends up appended.
+
+    Counts only lines whose first non-whitespace characters are triple
+    backticks or triple tildes (real fences, not inline code).
     """
-    fence_count = sum(
-        1 for line in text.splitlines() if line.lstrip().startswith("```")
-    )
-    if fence_count % 2 == 1:
-        return text + "\n```"
-    return text
+    # #py-m9 (#595): short-circuit on prose with no fences. The full
+    # splitlines + lstrip walk is O(n) on every page; pages without any
+    # fence at all (lots of them — quotes, summaries, frontmatter-only
+    # snippets) get the fast `in` check instead. Both `\`\`\`` and `~~~`
+    # must be absent for the early-out to be safe.
+    if "```" not in text and "~~~" not in text:
+        return text
+    backtick_count = 0
+    tilde_count = 0
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            backtick_count += 1
+        elif stripped.startswith("~~~"):
+            tilde_count += 1
+    suffix = ""
+    if backtick_count % 2 == 1:
+        suffix += "\n```"
+    if tilde_count % 2 == 1:
+        suffix += "\n~~~"
+    return text + suffix if suffix else text
 
 
 def truncate_chars(text: str, max_chars: int) -> str:
@@ -758,12 +1035,46 @@ def render_user_prompt(record: dict[str, Any], redact: Redactor, max_chars: int)
 
 # ─── full markdown renderer ────────────────────────────────────────────────
 
+_UUID_LIKE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+
 def derive_session_slug(records: list[dict[str, Any]], jsonl_path: Path) -> str:
+    """Derive a slug from session records or fall back to the filename.
+
+    #424: when no ``slug`` field is in any record, the old fallback was
+    ``jsonl_path.stem[:12]``. UUID-named transcripts (Claude Code emits
+    these — ``b7f0e3c4-2189-4f8e-9e4f-...jsonl``) all collapsed onto
+    the *same* 12-char prefix per project (``b7f0e3c4-21``), so two
+    sessions in the same minute with that prefix produced the same
+    canonical filename. Correctness was coupled to the disambig pass
+    (#339); if the renderer ever moved first, this regressed silently.
+
+    Fix: detect UUID-shaped stems and fall back to the same stable
+    8-char source hash the disambig pass uses (``_source_hash8``).
+    Two distinct UUIDs always produce distinct hashes, so the canonical
+    slug is unique without leaning on disambig. Non-UUID stems keep
+    the historical 12-char prefix to preserve human-readable slugs
+    for projects that name their JSONLs deliberately.
+    """
     for r in records:
         slug = r.get("slug")
         if slug:
             return str(slug)
-    return jsonl_path.stem[:12]
+    stem = jsonl_path.stem
+    # #arch-l3 (#625): the 8-char vs 12-char split is intentional, not
+    # a drift. UUID stems get the stable hash because every UUID shares
+    # the same 12-char prefix per project; deliberate human-named stems
+    # get the 12-char prefix because it preserves readability. Don't
+    # collapse them — a single rule loses one of the two properties.
+    if _UUID_LIKE.match(stem):
+        return _source_hash8(jsonl_path)
+    if not stem:
+        # Empty stem (rare — would require a literal ``.jsonl`` filename).
+        return _source_hash8(jsonl_path)
+    return stem[:12]
 
 
 def flat_output_name(
@@ -777,6 +1088,12 @@ def flat_output_name(
 
     The date+time+project+slug format ensures chronological sort,
     project traceability, and uniqueness without nested directories.
+
+    Note (#arch-l2 / #624): the ``slug`` argument may already carry a
+    ``-subagent-<agent_id>`` suffix when the caller is rendering a
+    sub-agent transcript. ``flat_output_name`` does NOT add that
+    suffix itself — it's mixed in upstream (see ``render_session_*``
+    sites in this file) so this helper stays single-purpose.
 
     ``disambiguator`` (#339): when two distinct source jsonls would
     produce the same filename (subagents that inherit the parent's
@@ -813,6 +1130,70 @@ def _adapter_tag(adapter_name: str) -> str:
     if not normalised:
         return "claude-code"
     return normalised
+
+
+def derive_description(records: list[dict[str, Any]], redact: "Redactor") -> str:
+    """#471: derive a 120-char human-readable description from the
+    first non-trivial user prompt in the session.
+
+    Walks the records looking for the first user message, strips path
+    noise, skips trivial openers ("hi", "thanks", "continue"), and
+    truncates to ~120 chars at a word boundary.
+
+    Empty / un-derivable input returns ``""``; callers can fall back
+    to the slug. Always passes the result through the same Redactor
+    the body uses so the description doesn't leak any path / token
+    that the body would have redacted.
+    """
+    TRIVIAL = {"hi", "hello", "hey", "thanks", "thank you", "ok",
+               "continue", "go on", "ya", "yes", "no", "."}
+    MAX_CHARS = 120
+    PATH_PREFIX_RE = re.compile(r"^/?(?:Users|home|mnt/[a-z]|cygdrive/[a-z])/[^/\s]+/")
+
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        if r.get("type") != "user":
+            continue
+        msg = r.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            # Take the first text-shaped block.
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text") or ""
+                    break
+                if isinstance(block, str):
+                    text = block
+                    break
+        if not text:
+            continue
+
+        # First non-empty line (skip code-fence opens + path-noise).
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("```") or line.startswith("~~~"):
+                continue
+            # Strip leading absolute-path prefix from "two tasks in /Users/x/..." style.
+            line = PATH_PREFIX_RE.sub("", line, count=1)
+            # Skip trivial openers (case-insensitive).
+            if line.lower().rstrip(" ?!.") in TRIVIAL:
+                continue
+            # Truncate at word boundary.
+            if len(line) > MAX_CHARS:
+                cut = line.rfind(" ", 0, MAX_CHARS - 3)
+                if cut < MAX_CHARS // 2:
+                    cut = MAX_CHARS - 3
+                line = line[:cut].rstrip() + "..."
+            return redact(line)
+    return ""
 
 
 def render_session_markdown(
@@ -855,10 +1236,17 @@ def render_session_markdown(
     # sessions were mis-tagged and grouped under the wrong chip on
     # the compiled site.
     tag_adapter = _adapter_tag(adapter_name)
+    # #471: human-readable description from the first non-trivial user
+    # turn — replaces the opaque slug-date title in listings.
+    description = derive_description(records, redact)
+    # YAML-escape inner double quotes so the frontmatter parser doesn't
+    # truncate at the first internal `"`.
+    description_safe = description.replace("\\", "\\\\").replace('"', '\\"')
     front = [
         "---",
         f'title: "{title}"',
         "type: source",
+        f'description: "{description_safe}"',
         f"tags: [{tag_adapter}, session-transcript]",
         f"date: {date_str}",
         f"source_file: raw/sessions/{started.strftime('%Y-%m-%dT%H-%M')}-{project_slug}-{slug}.md",
@@ -979,11 +1367,17 @@ def convert_all(
     discover_adapters()
     selected: list[type] = []
     if adapters:
+        # #v1378-review: aliases now live in REGISTRY_ALIASES, not
+        # REGISTRY itself, so resolve through resolve_adapter_name to
+        # support both canonical names and historical kebab-case
+        # aliases (e.g. `--adapter copilot-chat`).
+        from llmwiki.adapters import resolve_adapter_name
         for name in adapters:
-            if name not in REGISTRY:
+            canonical = resolve_adapter_name(name)
+            if canonical is None:
                 print(f"error: unknown adapter {name!r}. Try: {', '.join(REGISTRY)}", file=sys.stderr)
                 return 2
-            selected.append(REGISTRY[name])
+            selected.append(REGISTRY[canonical])
     else:
         # #326: default-fire only AI-session adapters. Non-AI adapters
         # (obsidian, jira, meeting, pdf) must be explicitly enabled via
@@ -1019,6 +1413,13 @@ def convert_all(
         })
         c[field] = c.get(field, 0) + 1
 
+    # Names claimed by this sync run. Independent of --force and of the
+    # state file — its sole purpose is to stop two source jsonls in this
+    # single run from writing to the same canonical filename. Without this
+    # set, `sync --force` silently overwrote colliding outputs because the
+    # disambiguator on disk was gated on ``not force`` (bug #339).
+    names_written_this_run: set[str] = set()
+
     for cls in selected:
         adapter = cls(config)
         print(f"==> adapter: {cls.name}")
@@ -1030,15 +1431,14 @@ def convert_all(
         })
         counters[cls.name]["discovered"] = len(sessions)
         for path in sessions:
-            project_slug = adapter.derive_project_slug(path)
-            if project and project not in project_slug:
-                filtered += 1
-                _bump(cls.name, "filtered")
-                continue
-            if ignore and ignore.is_ignored(project=project_slug, filename=path.name):
-                ignored_count += 1
-                _bump(cls.name, "ignored")
-                continue
+            # #arch-h9 (#612): mtime check FIRST. The previous order
+            # called `adapter.derive_project_slug(path)` before the
+            # mtime check, which on Codex CLI opens every .jsonl to
+            # read the session_meta cwd field. On a 5k-session corpus
+            # that's 5k needless file opens per no-op sync (~10x scale
+            # projection). Stat is cheap; slug derivation can be
+            # expensive — so check mtime first and skip the expensive
+            # slug + ignore + project-filter work when nothing changed.
             try:
                 mtime = path.stat().st_mtime
             except OSError as e:
@@ -1050,6 +1450,20 @@ def convert_all(
             if state.get(key) == mtime:
                 unchanged += 1
                 _bump(cls.name, "unchanged")
+                continue
+
+            # Now we know we have to look at the file content — derive
+            # slug + run filters. Anything that bails after this point
+            # has had to pay the slug cost, but that's true for every
+            # session that actually gets converted.
+            project_slug = adapter.derive_project_slug(path)
+            if project and project not in project_slug:
+                filtered += 1
+                _bump(cls.name, "filtered")
+                continue
+            if ignore and ignore.is_ignored(project=project_slug, filename=path.name):
+                ignored_count += 1
+                _bump(cls.name, "ignored")
                 continue
 
             # Markdown-source adapters (e.g. Obsidian) route through a simple
@@ -1086,40 +1500,28 @@ def convert_all(
                 _bump(cls.name, "converted")
                 continue
 
-            # PDF adapter: extract text → frontmatter'd markdown
-            if path.suffix == ".pdf":
-                try:
-                    md, out_name = adapter.convert_pdf(path, redact=redact)
-                except Exception as e:
-                    print(f"  skip: {path.name}: {e}", file=sys.stderr)
-                    errors += 1
-                    _bump(cls.name, "errored")
-                    _quarantine_add(cls.name, str(path), f"pdf convert failed: {e}")
-                    continue
-                if not md:
-                    filtered += 1
-                    _bump(cls.name, "filtered")
-                    continue
-                out_path = out_dir / f"{project_slug}-{out_name}"
-                if dry_run:
-                    print(f"  [dry-run] {out_path.relative_to(REPO_ROOT) if out_path.is_relative_to(REPO_ROOT) else out_path} ({len(md)} bytes)")
-                else:
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        _raw_write_guard(out_path, force=force, source=str(path),
-                                         adapter_name=cls.name)
-                    except FileExistsError as e:
-                        errors += 1
-                        _bump(cls.name, "errored")
-                        _quarantine_add(cls.name, str(path), str(e))
-                        continue
-                    out_path.write_text(md, encoding="utf-8")
-                    state[key] = mtime
-                converted += 1
-                _bump(cls.name, "converted")
-                continue
+            # #493: PDF dispatch removed. There was never a concrete PDF
+            # adapter — `adapter.convert_pdf` raised AttributeError on
+            # every adapter, the exception got swallowed into
+            # `_quarantine_add`, and the user saw a confusing
+            # "'XAdapter' object has no attribute 'convert_pdf'" entry.
+            # README also lied about a "PDF Production v0.5" adapter
+            # that never existed. If a real PDF adapter ships later it
+            # can re-add this branch and declare `convert_pdf` on
+            # `BaseAdapter` properly.
 
-            records = parse_jsonl(path)
+            # #487: parse_jsonl now re-raises OSError so we can route I/O
+            # failures through the quarantine + 'errored' bucket the same
+            # way write failures do. Previously the helper swallowed them
+            # and the file silently became 'filtered' (zero records).
+            try:
+                records = parse_jsonl(path)
+            except OSError as e:
+                print(f"  error: {path.name}: {e}", file=sys.stderr)
+                errors += 1
+                _bump(cls.name, "errored")
+                _quarantine_add(cls.name, str(path), f"parse_jsonl I/O failed: {e}")
+                continue
             # v0.5 (#109): normalize agent-specific records into the shared
             # Claude-style format before filtering/rendering. This lets each
             # adapter translate its native schema without touching the shared
@@ -1154,25 +1556,52 @@ def convert_all(
             date_str = started.strftime("%Y-%m-%d")
             out_name = flat_output_name(started, project_slug, slug)
             out_path = out_dir / out_name
-            # #339: if the canonical name already exists on disk AND
-            # the state file doesn't record US as the writer (different
-            # source jsonl), this is a real collision — retry with the
-            # jsonl's path-hash appended so both sources land side by
-            # side.  Parent session stays at the canonical filename;
-            # subagents + same-minute siblings carry a --<hash8> suffix.
-            if (
-                not dry_run
-                and not force
-                and out_path.exists()
-                and state.get(key) != mtime
-            ):
+            # #339: disambiguate when the canonical name would collide with
+            # a different source. Two cases, both must trigger the retry:
+            #   (a) Another source in THIS sync run already claimed the
+            #       canonical name. Independent of --force — otherwise
+            #       `sync --force` silently overwrites sibling sessions
+            #       whose project+date+slug happen to collide (~200
+            #       dropped sessions on a real claude-code corpus).
+            #   (b) Canonical exists on disk from a prior run AND the
+            #       state file does not record us as its writer. Only
+            #       consulted when --force is off; under --force the user
+            #       has explicitly asked to overwrite their own prior
+            #       outputs.
+            needs_disambig = not dry_run and (
+                out_name in names_written_this_run
+                or (not force and out_path.exists() and state.get(key) != mtime)
+            )
+            if needs_disambig:
                 out_name = flat_output_name(
                     started, project_slug, slug,
                     disambiguator=_source_hash8(path),
                 )
                 out_path = out_dir / out_name
+                # #404: rewrite the source_file: frontmatter line so it
+                # matches the disambiguated filename. Without this the
+                # rendered markdown still pointed at the canonical name,
+                # breaking graph viewer links and any consumer that
+                # resolved source_file → site URL.
+                md = re.sub(
+                    r"^source_file: raw/sessions/[^\n]+$",
+                    f"source_file: raw/sessions/{out_name}",
+                    md,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
+            if not dry_run:
+                names_written_this_run.add(out_name)
             if dry_run:
-                print(f"  [dry-run] {out_path.relative_to(REPO_ROOT)} ({len(md)} bytes)")
+                # #426 sister fix: mirror the defensive `is_relative_to` check
+                # the verbatim-text branch above already had so dry-run on
+                # out_dir paths outside REPO_ROOT (e.g. test fixtures, vault
+                # overlays) doesn't crash on `relative_to`.
+                shown = (
+                    out_path.relative_to(REPO_ROOT)
+                    if out_path.is_relative_to(REPO_ROOT) else out_path
+                )
+                print(f"  [dry-run] {shown} ({len(md)} bytes)")
             else:
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
@@ -1188,12 +1617,20 @@ def convert_all(
             converted += 1
             _bump(cls.name, "converted")
 
-    if not dry_run and not force:
+    if not dry_run:
         # G-03 (#289): stamp _meta.last_sync + _counters onto the state
         # file so `llmwiki sync --status` has a canonical place to read
         # observability data. Keys are namespaced with `_` so they can't
         # collide with portable adapter::path keys (which never start
         # with `_` because adapter names are lowercase identifiers).
+        # #426: persist under --force too. `--force` is meant to ignore
+        # *prior* state (re-process files even when their mtime says
+        # they're unchanged), not to skip recording the new run. The
+        # original `not force` guard discarded every per-key state
+        # update from this run plus the observability data, so
+        # `sync --status` after a `--force` re-sync would silently show
+        # the *previous* run's `last_sync` timestamp, and the next
+        # non-force sync would re-process every file all over again.
         state["_meta"] = {
             "last_sync": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "version": 1,

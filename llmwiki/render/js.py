@@ -40,28 +40,139 @@ JS = r"""// llmwiki viewer — theme + copy + search palette + keyboard shortcut
     light.disabled = isDark;
     dark.disabled = !isDark;
   }
-  const saved = localStorage.getItem("llmwiki-theme");
+  // #ui-h4 (#566): localStorage access can throw in Safari Private Mode,
+  // sandboxed iframes, and some embedded browsers. Wrap reads + writes
+  // in try/catch so a thrown SecurityError doesn't kill the whole
+  // theme + hljs-sync wiring.
+  let saved = null;
+  try { saved = localStorage.getItem("llmwiki-theme"); } catch (e) { /* private mode */ }
   if (saved === "dark" || saved === "light") root.setAttribute("data-theme", saved);
+  // `system` and the missing-key case both mean "follow OS preference"
+  // — leave data-theme unset so the @media (prefers-color-scheme)
+  // rules in css.py drive the palette.
   syncHljsTheme();
+  // #ui-h6 (#567): keep the page palette in sync if the OS theme
+  // changes WHILE we're on `system` mode. Without this listener, a
+  // user who toggles their OS dark mode mid-session sees the page
+  // stay on whatever it was rendered with.
+  if (window.matchMedia) {
+    try {
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+        let s = null;
+        try { s = localStorage.getItem("llmwiki-theme"); } catch (e) {}
+        if (s !== "dark" && s !== "light") syncHljsTheme();
+      });
+    } catch (e) { /* old Safari uses addListener */ }
+  }
   document.addEventListener("DOMContentLoaded", function () {
     syncHljsTheme();
     const btn = document.getElementById("theme-toggle");
     if (!btn) return;
+    // #ui-h8 (#568): aria state mirrors the current cycle position so
+    // assistive tech announces what's pinned, not just "pressed".
+    // #v1378-review: aria-pressed collapses 3 states (system / dark /
+    // light) to 2 (true|false) — both "system" and "light" mapped to
+    // "false", so a screen-reader user couldn't tell which state they
+    // were in. Switched to a dynamic aria-label describing the
+    // current theme + the next-tap action. aria-pressed is also kept
+    // for back-compat with anything reading the binary signal.
+    function syncAriaState() {
+      let stored = null;
+      try { stored = localStorage.getItem("llmwiki-theme"); } catch (e) {}
+      const isDark = (root.getAttribute("data-theme") || (
+        (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light"
+      )) === "dark";
+      btn.setAttribute("aria-pressed", isDark ? "true" : "false");
+      const labels = {
+        dark: "Theme: dark — click for light",
+        light: "Theme: light — click for system default",
+      };
+      const systemLabel = "Theme: follows system — click for dark";
+      btn.setAttribute(
+        "aria-label",
+        labels[stored] || systemLabel,
+      );
+    }
+    const syncAriaPressed = syncAriaState; // alias kept for older call sites
+    syncAriaPressed();
     btn.addEventListener("click", function () {
-      // When no explicit theme is set, the page follows the OS preference.
-      // Resolve that to a concrete value so the first toggle always flips.
-      let current = root.getAttribute("data-theme");
-      if (!current) {
-        current = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      // #ui-h6 (#567): tri-state toggle. The cycle is:
+      //   system → dark → light → system → ...
+      // `system` means: data-theme attribute removed, palette follows
+      // @media (prefers-color-scheme). Pinning a value moves out of
+      // system mode; clicking back to system clears the localStorage
+      // entry so a fresh tab also follows the OS.
+      let stored = null;
+      try { stored = localStorage.getItem("llmwiki-theme"); } catch (e) {}
+      let next;
+      if (stored !== "dark" && stored !== "light") {
+        // Currently following system → pin to dark.
+        next = "dark";
+      } else if (stored === "dark") {
+        next = "light";
+      } else {
+        // stored === "light" → return to system.
+        next = null;
       }
-      const next = current === "dark" ? "light" : "dark";
-      root.setAttribute("data-theme", next);
-      localStorage.setItem("llmwiki-theme", next);
+      if (next === null) {
+        root.removeAttribute("data-theme");
+        try { localStorage.removeItem("llmwiki-theme"); } catch (e) {}
+      } else {
+        root.setAttribute("data-theme", next);
+        try { localStorage.setItem("llmwiki-theme", next); } catch (e) {}
+      }
       syncHljsTheme();
+      syncAriaPressed();
     });
   });
   // Also respond to the mobile bottom nav theme button (bound later in script.js).
   window.__llmwikiSyncHljsTheme = syncHljsTheme;
+})();
+
+// ─── #460: Mobile/tablet hamburger nav drawer ─────────────────────────────
+// Wires the hamburger button to toggle the drawer with proper aria state.
+// ESC closes and returns focus to the hamburger. Click-outside closes.
+// Drawer items are real <a>; tabbing flows naturally. No focus trap needed
+// because the drawer is non-modal — the rest of the page is still
+// interactive when it's open.
+(function () {
+  document.addEventListener("DOMContentLoaded", function () {
+    const btn = document.getElementById("nav-hamburger");
+    const drawer = document.getElementById("nav-drawer");
+    if (!btn || !drawer) return;
+    function setOpen(open) {
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      // #v1378-review: aria-label was static "Open navigation menu"
+      // even when the drawer was already open; screen readers
+      // announced the wrong action. Toggle it alongside aria-expanded.
+      btn.setAttribute(
+        "aria-label",
+        open ? "Close navigation menu" : "Open navigation menu",
+      );
+      if (open) drawer.removeAttribute("hidden");
+      else drawer.setAttribute("hidden", "");
+    }
+    btn.addEventListener("click", function () {
+      setOpen(btn.getAttribute("aria-expanded") !== "true");
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && btn.getAttribute("aria-expanded") === "true") {
+        setOpen(false);
+        btn.focus();
+      }
+    });
+    // Click outside the drawer closes it.
+    document.addEventListener("click", function (e) {
+      if (btn.getAttribute("aria-expanded") !== "true") return;
+      if (drawer.contains(e.target) || btn.contains(e.target)) return;
+      setOpen(false);
+    });
+    // Close after navigating to one of the drawer items so the next page
+    // doesn't briefly render with the drawer still open above the fold.
+    drawer.querySelectorAll("a").forEach(function (a) {
+      a.addEventListener("click", function () { setOpen(false); });
+    });
+  });
 })();
 
 // ─── Reading progress bar ────────────────────────────────────────────────
@@ -215,16 +326,52 @@ JS = r"""// llmwiki viewer — theme + copy + search palette + keyboard shortcut
     // Wire the theme button to toggle
     const themeBtn = document.getElementById("mbn-theme");
     if (themeBtn) {
+      // #v1378-review: same dynamic aria-label treatment as the
+      // desktop button — aria-pressed alone collapses the tri-state
+      // (system / dark / light) into a binary signal. The label
+      // describes the current state plus the next-tap action.
+      function _mbnSyncPressed() {
+        let stored = null;
+        try { stored = localStorage.getItem("llmwiki-theme"); } catch (e) { /* private mode */ }
+        const isDark = (document.documentElement.getAttribute("data-theme") || (
+          (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light"
+        )) === "dark";
+        themeBtn.setAttribute("aria-pressed", isDark ? "true" : "false");
+        const labels = {
+          dark: "Theme: dark — tap for light",
+          light: "Theme: light — tap for system default",
+        };
+        const systemLabel = "Theme: follows system — tap for dark";
+        themeBtn.setAttribute("aria-label", labels[stored] || systemLabel);
+      }
+      _mbnSyncPressed();
       themeBtn.addEventListener("click", function () {
+        // Post-final-review: mirror the desktop tri-state cycle
+        // (system → dark → light → system) instead of a binary
+        // dark/light flip. The old binary path would silently move
+        // the user out of "system" mode on the first tap and there
+        // was no way back from the mobile menu — desktop and mobile
+        // diverged behaviorally. Cycle source-of-truth is desktop.
         const root = document.documentElement;
-        let current = root.getAttribute("data-theme");
-        if (!current) {
-          current = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+        let stored = null;
+        try { stored = localStorage.getItem("llmwiki-theme"); } catch (e) { /* private mode */ }
+        let next;
+        if (stored !== "dark" && stored !== "light") {
+          next = "dark";
+        } else if (stored === "dark") {
+          next = "light";
+        } else {
+          next = null; // back to system
         }
-        const next = current === "dark" ? "light" : "dark";
-        root.setAttribute("data-theme", next);
-        localStorage.setItem("llmwiki-theme", next);
+        if (next === null) {
+          root.removeAttribute("data-theme");
+          try { localStorage.removeItem("llmwiki-theme"); } catch (e) { /* private mode */ }
+        } else {
+          root.setAttribute("data-theme", next);
+          try { localStorage.setItem("llmwiki-theme", next); } catch (e) { /* private mode */ }
+        }
         if (window.__llmwikiSyncHljsTheme) window.__llmwikiSyncHljsTheme();
+        _mbnSyncPressed();
       });
     }
   });
@@ -282,24 +429,63 @@ document.addEventListener("DOMContentLoaded", function () {
 });
 
 // ─── Auto-collapse long tool results into <details> ──────────────────────
+// #476: the summary used to read "Tool results (544 chars) — click to
+// expand" — pure char-count, no signal. Now extracts the first non-
+// blank line as a preview, detects ok/error from a leading `(ok)` or
+// `(ERROR)` marker the markdown emit puts in, and counts result lines.
+// Renders as a richer card: `[ok] preview text · 412 lines · click to
+// expand`. Keeps the same <details>/<summary> structure so existing CSS
+// + a11y plumbing continues to work.
 document.addEventListener("DOMContentLoaded", function () {
-  // Wrap long <pre> outputs and long paragraph lists under "Tool results:"
   const markers = document.querySelectorAll(".content p strong");
   markers.forEach(function (s) {
     const text = (s.textContent || "").trim();
     if (text !== "Tool results:") return;
     const p = s.closest("p");
     if (!p) return;
-    // Check if the next sibling has very long text
     let next = p.nextElementSibling;
     if (!next) return;
     const combinedText = (next.innerText || "").trim();
     if (combinedText.length < 500) return;
-    // Wrap next element in a <details>
+
+    // Outcome detection: the markdown emit prepends "→ result (ok):" or
+    // "→ result (ERROR):" to each block. First match wins.
+    const outcome = /\(ERROR\)/.test(combinedText) ? "error" : "ok";
+    // Preview: first non-blank line, stripped of "→ result (ok):" prefix
+    // and arrow indent. Truncate at 80 chars on a word boundary.
+    const lines = combinedText.split(/\r?\n/);
+    let preview = "";
+    for (const raw of lines) {
+      const line = raw.replace(/^\s*→\s*result\s*\((?:ok|ERROR)\):\s*/, "").trim();
+      if (line) { preview = line; break; }
+    }
+    if (preview.length > 80) {
+      const cut = preview.lastIndexOf(" ", 77);
+      preview = (cut > 40 ? preview.slice(0, cut) : preview.slice(0, 77)) + "...";
+    }
+    const lineCount = lines.length;
+
+    // Wrap next element in a <details>.
     const det = document.createElement("details");
-    det.className = "collapsible-result";
+    det.className = "collapsible-result outcome-" + outcome;
     const sum = document.createElement("summary");
-    sum.textContent = "Tool results (" + combinedText.length + " chars) — click to expand";
+    // Build the summary as DOM nodes (not innerHTML) so a malicious
+    // preview can't inject markup.
+    const badge = document.createElement("span");
+    badge.className = "tool-result-badge tool-result-" + outcome;
+    badge.textContent = outcome === "error" ? "ERROR" : "ok";
+    sum.appendChild(badge);
+    if (preview) {
+      const previewEl = document.createElement("span");
+      previewEl.className = "tool-result-preview";
+      previewEl.textContent = " " + preview;
+      sum.appendChild(previewEl);
+    }
+    const meta = document.createElement("span");
+    meta.className = "tool-result-meta muted";
+    meta.textContent = " · " + lineCount + (lineCount === 1 ? " line" : " lines") +
+                       " · " + combinedText.length + " chars";
+    sum.appendChild(meta);
     det.appendChild(sum);
     next.parentNode.insertBefore(det, next);
     det.appendChild(next);
@@ -480,12 +666,96 @@ document.addEventListener("DOMContentLoaded", function () {
     window.location.href = pathPrefix + r.url;
   }
 
+  // #478, #479: dialog focus + inert helpers shared by palette + help.
+  // Stash who opened the dialog so we can restore focus on close.
+  // Apply `inert` to every direct child of <body> EXCEPT the dialog
+  // itself so AT users can't tab into the page chrome behind the
+  // backdrop (the previous aria-hidden gate left siblings reachable).
+  //
+  // Post-review: stash is a Map keyed by dialog.id so opening a second
+  // dialog while the first is still open doesn't clobber the first
+  // dialog's restoration target. Equally, inert is only removed from
+  // siblings that are NOT themselves currently-open dialogs, so closing
+  // help while palette is still open doesn't strip the palette's inert
+  // wrapping of the rest of the chrome.
+  var __dialogLastFocus = new Map();
+  function __getInertSiblings(dialog) {
+    return Array.prototype.filter.call(
+      document.body.children,
+      function (el) { return el !== dialog; }
+    );
+  }
+  function __isOpenDialog(el) {
+    return el && el.classList && el.classList.contains("open") &&
+           (el.id === "palette" || el.id === "help-dialog");
+  }
+  function __isDialogOpen(dialog) {
+    return dialog && dialog.classList.contains("open");
+  }
+  function __getFocusable(container) {
+    return Array.prototype.filter.call(
+      container.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), ' +
+        'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      ),
+      function (el) { return !el.hasAttribute("disabled") && el.offsetParent !== null; }
+    );
+  }
+  function __syncTriggerAriaExpanded(dialog, value) {
+    // #ui-h8 (#568): trigger button's aria-expanded must mirror the
+    // dialog's open/closed state so AT users hear the right thing
+    // when they re-focus the trigger.
+    if (!dialog || !dialog.id) return;
+    const trigger = document.querySelector('[aria-controls="' + dialog.id + '"]');
+    if (trigger) trigger.setAttribute("aria-expanded", value ? "true" : "false");
+  }
+  function __openDialog(dialog, firstFocus) {
+    if (!dialog || dialog.classList.contains("open")) return;
+    if (dialog.id) __dialogLastFocus.set(dialog.id, document.activeElement);
+    dialog.classList.add("open");
+    __syncTriggerAriaExpanded(dialog, true);
+    __getInertSiblings(dialog).forEach(function (s) { s.setAttribute("inert", ""); });
+    if (firstFocus && firstFocus.focus) firstFocus.focus();
+  }
+  function __closeDialog(dialog) {
+    if (!dialog || !dialog.classList.contains("open")) return;
+    dialog.classList.remove("open");
+    __syncTriggerAriaExpanded(dialog, false);
+    // Only strip inert from siblings that are NOT themselves an open
+    // dialog — otherwise closing the help-dialog while palette is open
+    // re-exposes the palette's inert chrome guard.
+    __getInertSiblings(dialog).forEach(function (s) {
+      if (!__isOpenDialog(s)) s.removeAttribute("inert");
+    });
+    var lf = dialog.id ? __dialogLastFocus.get(dialog.id) : null;
+    if (lf && lf.focus) {
+      try { lf.focus(); } catch (e) { /* trigger gone */ }
+    }
+    if (dialog.id) __dialogLastFocus.delete(dialog.id);
+  }
+  // Trap Tab + Shift+Tab inside `dialog` so focus can't escape into
+  // the inert page chrome and become visually invisible.
+  function __trapTab(dialog) {
+    return function (e) {
+      if (e.key !== "Tab" || !__isDialogOpen(dialog)) return;
+      const focusable = __getFocusable(dialog);
+      if (focusable.length === 0) { e.preventDefault(); return; }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    };
+  }
+
   function openPalette() {
     const p = document.getElementById("palette");
     if (!p) return;
-    p.setAttribute("aria-hidden", "false");
     const input = document.getElementById("palette-input");
-    if (input) { input.value = ""; input.focus(); }
+    if (input) { input.value = ""; }
+    __openDialog(p, input);
     // Show meta entries immediately while chunks load
     var meta = getMetaSync();
     if (meta.length && !idx) renderResults(meta.slice(0, 10));
@@ -494,17 +764,18 @@ document.addEventListener("DOMContentLoaded", function () {
 
   function closePalette() {
     const p = document.getElementById("palette");
-    if (!p) return;
-    p.setAttribute("aria-hidden", "true");
+    __closeDialog(p);
   }
 
   function openHelp() {
     const d = document.getElementById("help-dialog");
-    if (d) d.setAttribute("aria-hidden", "false");
+    if (!d) return;
+    const closeBtn = document.getElementById("help-close");
+    __openDialog(d, closeBtn);
   }
   function closeHelp() {
     const d = document.getElementById("help-dialog");
-    if (d) d.setAttribute("aria-hidden", "true");
+    __closeDialog(d);
   }
 
   document.addEventListener("DOMContentLoaded", function () {
@@ -530,6 +801,13 @@ document.addEventListener("DOMContentLoaded", function () {
     if (helpBackdrop) helpBackdrop.addEventListener("click", closeHelp);
     const helpClose = document.getElementById("help-close");
     if (helpClose) helpClose.addEventListener("click", closeHelp);
+
+    // #479: Tab focus traps. Listening on document so the handler fires
+    // even when the focused element is a backdrop / non-focusable.
+    const paletteEl = document.getElementById("palette");
+    if (paletteEl) document.addEventListener("keydown", __trapTab(paletteEl));
+    const helpEl = document.getElementById("help-dialog");
+    if (helpEl) document.addEventListener("keydown", __trapTab(helpEl));
   });
 
   function updateActive() {
@@ -555,8 +833,9 @@ document.addEventListener("DOMContentLoaded", function () {
     if (e.key === "Escape") {
       const p = document.getElementById("palette");
       const h = document.getElementById("help-dialog");
-      if (p && p.getAttribute("aria-hidden") === "false") { closePalette(); return; }
-      if (h && h.getAttribute("aria-hidden") === "false") { closeHelp(); return; }
+      // #478: state check now reads the .open class (was aria-hidden).
+      if (p && p.classList.contains("open")) { closePalette(); return; }
+      if (h && h.classList.contains("open")) { closeHelp(); return; }
       if (inInput) { e.target.blur(); return; }
     }
 
@@ -615,6 +894,39 @@ document.addEventListener("DOMContentLoaded", function () {
   const fClear = document.getElementById("filter-clear");
   const fCount = document.getElementById("filter-count");
 
+  // #ui-m1 (#572): persist filter selections to sessionStorage so a
+  // navigation away + back doesn't lose the user's filter state.
+  // sessionStorage (not localStorage) is the right scope: it survives
+  // back/forward but clears on tab close, matching user expectations
+  // for a transient filter view.
+  const STORAGE_KEY = "llmwiki-sessions-filters";
+  function _readSaved() {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function _writeSaved() {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+        p: fProject ? fProject.value : "",
+        m: fModel ? fModel.value : "",
+        from: fFrom ? fFrom.value : "",
+        to: fTo ? fTo.value : "",
+        txt: fText ? fText.value : "",
+      }));
+    } catch (e) { /* private mode */ }
+  }
+  // Restore on page load.
+  const saved = _readSaved();
+  if (saved) {
+    if (fProject && saved.p) fProject.value = saved.p;
+    if (fModel && saved.m) fModel.value = saved.m;
+    if (fFrom && saved.from) fFrom.value = saved.from;
+    if (fTo && saved.to) fTo.value = saved.to;
+    if (fText && saved.txt) fText.value = saved.txt;
+  }
+
   function apply() {
     const p = fProject ? fProject.value : "";
     const m = fModel ? fModel.value : "";
@@ -637,6 +949,7 @@ document.addEventListener("DOMContentLoaded", function () {
       if (show) shown++;
     });
     if (fCount) fCount.textContent = shown + " shown";
+    _writeSaved();
   }
 
   [fProject, fModel, fFrom, fTo, fText].forEach(function (el) {
@@ -648,6 +961,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (fFrom) fFrom.value = "";
     if (fTo) fTo.value = "";
     if (fText) fText.value = "";
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
     apply();
   });
   apply();
@@ -744,15 +1058,29 @@ document.addEventListener("DOMContentLoaded", function () {
     }
     if (!key) return;
 
-    a.addEventListener("mouseenter", function () {
+    function _show() {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
       loadIndex().then(function () {
         const entry = findEntry(key);
         if (entry) showPreview(a, entry);
       });
-    });
-    a.addEventListener("mouseleave", function () {
+    }
+    function _hide() {
       hideTimer = setTimeout(hidePreview, 200);
+    }
+    // #ui-h13 (#570): keyboard parity for the hover preview. Show on
+    // focus + hide on blur so a Tab-only user gets the same affordance
+    // a mouse user gets. ESC dismisses immediately and returns nothing
+    // to do (focus is already on the link).
+    a.addEventListener("mouseenter", _show);
+    a.addEventListener("mouseleave", _hide);
+    a.addEventListener("focus", _show);
+    a.addEventListener("blur", _hide);
+    a.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+        hidePreview();
+      }
     });
   }
 
@@ -765,6 +1093,17 @@ document.addEventListener("DOMContentLoaded", function () {
 // Render a compact sparkline above the sessions table showing session count
 // per day over the last 60 days.
 (function () {
+  // Post-final-review: local attribute escaper. The timeline SVG below
+  // string-concatenates `data-date` and `data-count` into HTML; while
+  // the values come from controlled `data-date` row attributes (built
+  // in build.py from frontmatter dates), defense-in-depth escapes them
+  // anyway. The palette IIFE has its own `escapeHtml` but it's out of
+  // scope here, hence the local copy.
+  function escAttr(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
   document.addEventListener("DOMContentLoaded", function () {
     const tbody = document.getElementById("sessions-tbody");
     if (!tbody) return;
@@ -786,18 +1125,34 @@ document.addEventListener("DOMContentLoaded", function () {
     const dates = Array.from(counts.keys()).sort();
     const maxCount = Math.max(...counts.values());
 
+    // #453: position bars by calendar date so gaps between active days are
+    // visible. The previous behaviour stretched dates.length bars across
+    // the full width with equal spacing, which hid 6-month gaps. We now
+    // compute calendar span (minDate→maxDate) in days and lay bars out
+    // proportional to their date offset. Single-day collections fall back
+    // to a single centred bar.
+    const minDate = new Date(dates[0] + "T00:00:00Z");
+    const maxDate = new Date(dates[dates.length - 1] + "T00:00:00Z");
+    const dayMs = 86400000;
+    const spanDays = Math.round((maxDate - minDate) / dayMs) + 1;
+
     // Build an SVG sparkline
     const w = 800;
     const h = 60;
     const padX = 4;
-    const bars = dates.map(function (d, i) {
+    const innerW = w - 2 * padX;
+    const slotW = spanDays > 1 ? innerW / spanDays : innerW;
+    const bars = dates.map(function (d) {
       const count = counts.get(d);
-      const barW = Math.max(2, (w - 2 * padX) / dates.length - 2);
-      const x = padX + i * ((w - 2 * padX) / dates.length);
+      const offset = spanDays > 1
+        ? Math.round((new Date(d + "T00:00:00Z") - minDate) / dayMs)
+        : 0;
+      const x = spanDays > 1 ? padX + offset * slotW : padX + innerW / 2 - 2;
+      const barW = Math.max(2, slotW - 1);
       const barH = (count / maxCount) * (h - 16);
       const y = h - barH - 4;
       return '<rect x="' + x + '" y="' + y + '" width="' + barW + '" height="' + barH +
-             '" fill="var(--accent)" opacity="0.7" data-date="' + d + '" data-count="' + count + '"></rect>';
+             '" fill="var(--accent)" opacity="0.7" data-date="' + escAttr(d) + '" data-count="' + escAttr(count) + '"></rect>';
     }).join("");
 
     const svg =
@@ -805,12 +1160,28 @@ document.addEventListener("DOMContentLoaded", function () {
       'style="width:100%;height:' + h + 'px;display:block" aria-label="Session activity timeline">' +
       bars + '</svg>';
 
-    // Create the timeline block
+    // #453: label now shows calendar span (matches the geometry above) plus
+    // active-day count and peak so users can read both stories from one line.
+    const labelText = spanDays === 1
+      ? 'Activity timeline · 1 day · peak ' + maxCount + (maxCount === 1 ? ' session' : ' sessions')
+      : 'Activity timeline · ' + spanDays + ' days · ' + dates.length +
+        ' active · peak ' + maxCount + (maxCount === 1 ? ' session/day' : ' sessions/day');
+
+    // Create the timeline block. #v1378-review: previously assigned
+    // the label + svg via innerHTML, which interpolated `labelText`
+    // (currently number-only — safe today) into HTML without escaping.
+    // Defense-in-depth: build the label as a real element with
+    // textContent so a future change feeding a user-derived string
+    // into the label can't introduce XSS. The svg string itself is
+    // already escaped via escAttr() at every data-* interpolation
+    // and uses only static structural markup elsewhere.
     const tl = document.createElement("div");
     tl.className = "timeline-block";
-    tl.innerHTML =
-      '<div class="timeline-label muted">Activity timeline · ' + dates.length +
-      ' days · peak ' + maxCount + ' sessions</div>' + svg;
+    const labelEl = document.createElement("div");
+    labelEl.className = "timeline-label muted";
+    labelEl.textContent = labelText;
+    tl.appendChild(labelEl);
+    tl.insertAdjacentHTML("beforeend", svg);
 
     // Insert above the filter bar
     const filter = container.querySelector(".filter-bar");
@@ -870,20 +1241,40 @@ document.addEventListener("DOMContentLoaded", function () {
           .slice(0, 5);
         if (!scored.length) return;
 
+        // Post-review remediation: title + url + date used to be
+        // interpolated into innerHTML without escaping. Build the DOM
+        // tree explicitly with createElement / textContent so a malicious
+        // session frontmatter title (e.g. "<img src=x onerror=...>") or
+        // a `javascript:` URL can't execute in the visitor's browser.
+        function _safeHref(raw) {
+          // Reject anything that isn't a relative path or http(s).
+          // Same-origin checks happen at the browser; we just gate the
+          // protocol prefix here to stop `javascript:` / `data:` etc.
+          var s = String(raw || "");
+          if (/^(javascript|data|vbscript):/i.test(s)) return "#";
+          return s;
+        }
         const section = document.createElement("div");
         section.className = "related-pages";
-        section.innerHTML =
-          "<h3>Related pages</h3>" +
-          '<ul>' +
-          scored.map(function (s) {
-            const href = "../../" + s.entry.url;
-            const title = s.entry.title;
-            const date = s.entry.date || "";
-            return '<li><a href="' + href + '">' + title + '</a>' +
-              (date ? ' <span class="muted">· ' + date + '</span>' : '') +
-              '</li>';
-          }).join("") +
-          '</ul>';
+        const heading = document.createElement("h3");
+        heading.textContent = "Related pages";
+        section.appendChild(heading);
+        const ul = document.createElement("ul");
+        scored.forEach(function (s) {
+          const li = document.createElement("li");
+          const a = document.createElement("a");
+          a.href = _safeHref("../../" + (s.entry.url || ""));
+          a.textContent = String(s.entry.title || "");
+          li.appendChild(a);
+          if (s.entry.date) {
+            const span = document.createElement("span");
+            span.className = "muted";
+            span.textContent = " \u00b7 " + String(s.entry.date);
+            li.appendChild(span);
+          }
+          ul.appendChild(li);
+        });
+        section.appendChild(ul);
         article.appendChild(section);
       })
       .catch(function () {});
